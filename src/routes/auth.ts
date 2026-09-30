@@ -14,7 +14,7 @@ authRoutes.get("/login", async (req, res) => {
     page(req, {
       title: "Log in",
       body: html`
-        <div class="card" style="max-width:420px;margin:40px auto">
+        <div class="card auth-card">
           <h1>Log in</h1>
           <p class="sub">Use the email and password your account manager sent you.</p>
           <form method="post" action="/login">

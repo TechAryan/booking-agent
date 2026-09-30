@@ -8,34 +8,42 @@ export function page(
 ): string {
   const u = req.user;
   const flash = opts.flash ?? flashFromQuery(req);
+  const path = req.path;
+  const tab = (href: string, label: string, active: boolean) =>
+    html`<a href="${href}" class="${active ? "tab active" : "tab"}" ${active ? html`aria-current="page"` : ""}>${label}</a>`;
   return html`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <title>${opts.title} · ${env.appName}</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v=3">
+<script>document.documentElement.classList.add("js")</script>
 </head>
 <body>
+<div class="progress" id="progress" aria-hidden="true"></div>
 <header class="topbar">
-  <a class="brand" href="/">${env.appName}</a>
+  <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>${env.appName}</a>
   ${u
-    ? html`<nav>
-        <a href="/">Dashboard</a>
-        ${u.role === "admin" ? html`<a href="/admin">Admin</a>` : ""}
-        <a href="/account/password">Account</a>
-        <form method="post" action="/logout" class="inline">
+    ? html`<nav class="tabs" aria-label="Main">
+        ${tab("/", "Dashboard", path === "/" || path.startsWith("/setup"))}
+        ${u.role === "admin" ? tab("/admin", "Admin", path.startsWith("/admin")) : ""}
+        ${tab("/account/password", "Account", path.startsWith("/account"))}
+        <form method="post" action="/logout" class="inline" data-silent>
           <input type="hidden" name="_csrf" value="${req.csrf}">
-          <button class="linklike">Log out</button>
+          <button class="tab linklike">Log out</button>
         </form>
       </nav>`
     : ""}
 </header>
 <main class="${opts.wide ? "wrap wide" : "wrap"}">
-  ${flash ? html`<div class="flash ${flash.type}">${flash.text}</div>` : ""}
+  ${flash ? html`<div class="flash ${flash.type}" data-toast="${flash.type}" role="status">${flash.text}</div>` : ""}
   ${opts.body}
 </main>
-<script src="/static/app.js"></script>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script src="/static/app.js?v=3"></script>
 </body>
 </html>`.toString();
 }

@@ -24,5 +24,6 @@ for (let i = 0; i < 40; i++) {
   try { if ((await fetch("http://localhost:3300/healthz")).ok) break; } catch {}
   await new Promise((r) => setTimeout(r, 500));
 }
-const t = spawn(process.execPath, ["tests/e2e.mjs"], { env, stdio: "inherit" });
+// TEST_UI=1 runs the browser test (tests/ui.mjs) instead of the API test.
+const t = spawn(process.execPath, [process.env.TEST_UI ? "tests/ui.mjs" : "tests/e2e.mjs"], { env: { ...env, UI_BASE: "http://localhost:3300" }, stdio: "inherit" });
 t.on("exit", (code) => { stop(); process.exit(code ?? 1); });

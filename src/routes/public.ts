@@ -35,17 +35,17 @@ publicRoutes.get("/w/:id", async (req, res) => {
     html`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Book · ${ws.business_name}</title>
-<link rel="stylesheet" href="/static/widget.css">
+<link rel="stylesheet" href="/static/widget.css?v=3">
 <style>:root{--accent:${/^#[0-9a-fA-F]{6}$/.test(ws.widget_color) ? ws.widget_color : "#16a34a"}}</style>
 </head><body>
 <div class="w">
-  <header><b>${ws.business_name}</b><span>Book an appointment</span><button type="button" id="reset" title="Start over" aria-label="Start over">↺</button></header>
+  <header><div class="av" aria-hidden="true">${(ws.business_name || "B").trim().charAt(0).toUpperCase()}</div><div class="t"><b>${ws.business_name}</b><span>Usually replies instantly</span></div><button type="button" id="reset" title="Start over" aria-label="Start over">↺</button></header>
   <div class="msgs" id="msgs"><div class="m b">${greeting}</div></div>
   <form id="f"><input id="t" type="text" placeholder="Type a message…" autocomplete="off" maxlength="1000" aria-label="Message"><button aria-label="Send">➤</button></form>
   <footer>Powered by ${env.appName}</footer>
 </div>
 <script>window.WIDGET_ID=${raw(JSON.stringify(ws.public_id).replace(/</g, "\\u003c"))};</script>
-<script src="/static/widget-chat.js"></script>
+<script src="/static/widget-chat.js?v=3"></script>
 </body></html>`.toString()
   );
 });

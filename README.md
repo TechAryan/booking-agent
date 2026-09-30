@@ -113,7 +113,7 @@ Without Turso, `bash deploy/railway-setup.sh you@example.com` does a fresh insta
 | `public/` | CSS and browser JS |
 | `render.yaml` | Render free-plan blueprint |
 | `deploy/railway-setup.sh` | One-command Railway setup / move |
-| `tests/` | `npm test` (local DB) and `npm run test:turso` (Turso client against a local stand-in) |
+| `tests/` | `npm test` (API, local DB), `npm run test:turso` (Turso client against a local stand-in), `npm run test:ui` (clicks through every screen in a real browser; run `npx playwright install chromium` once first) |
 
 ## Not included yet
 

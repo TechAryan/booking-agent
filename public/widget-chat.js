@@ -8,13 +8,14 @@
   function add(cls, text) { var d = document.createElement("div"); d.className = "m " + cls; d.textContent = text; msgs.appendChild(d); msgs.scrollTop = msgs.scrollHeight; return d; }
   form.addEventListener("submit", function (e) {
     e.preventDefault(); var text = input.value.trim(); if (!text) return;
-    add("u", text); input.value = ""; input.disabled = true;
-    var t = add("b typing", "typing…");
+    add("u", text); input.value = ""; input.disabled = true; form.querySelector("button").disabled = true;
+    var t = document.createElement("div"); t.className = "m b"; t.innerHTML = '<span class="typing" aria-label="Typing"><i></i><i></i><i></i></span>';
+    msgs.appendChild(t); msgs.scrollTop = msgs.scrollHeight;
     fetch("/w/" + id + "/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session: session, text: text }) })
       .then(function (r) { return r.json(); })
-      .then(function (j) { t.className = "m b"; t.textContent = j.reply || j.error || "Sorry, no reply."; })
-      .catch(function () { t.className = "m b"; t.textContent = "Network error. Please try again."; })
-      .finally(function () { input.disabled = false; input.focus(); msgs.scrollTop = msgs.scrollHeight; });
+      .then(function (j) { t.textContent = j.reply || j.error || "Sorry, no reply."; })
+      .catch(function () { t.textContent = "Network error. Please try again."; })
+      .finally(function () { input.disabled = false; form.querySelector("button").disabled = false; input.focus(); msgs.scrollTop = msgs.scrollHeight; });
   });
   document.getElementById("reset").addEventListener("click", function () {
     fetch("/w/" + id + "/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session: session }) });

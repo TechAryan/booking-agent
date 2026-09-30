@@ -63,7 +63,7 @@ adminRoutes.get("/admin", async (req, res) => {
 function userForm(req: Request, u?: User) {
   const isNew = !u;
   return html`
-    <form method="post" action="${isNew ? "/admin/users/new" : `/admin/users/${u!.id}`}">
+    <form method="post" action="${isNew ? "/admin/users/new" : `/admin/users/${u!.id}`}" data-busy="${isNew ? "Creating…" : "Saving…"}">
       ${csrfField(req)}
       <div class="grid">
         <div><label>Name</label><input type="text" name="name" value="${u?.name ?? ""}" required></div>
@@ -178,7 +178,7 @@ adminRoutes.get("/admin/users/:id", async (req, res) => {
         <div class="card">
           <h2>Password</h2>
           <p class="muted">Creates a new temporary password and logs them out everywhere.</p>
-          <form method="post" action="/admin/users/${u.id}/reset-password" data-confirm="Reset the password for ${u.email}?">
+          <form method="post" action="/admin/users/${u.id}/reset-password" data-confirm="Reset password?" data-confirm-detail="${u.email} gets a new temporary password and is logged out everywhere." data-confirm-ok="Reset">
             ${csrfField(req)}<button class="secondary">Reset password</button>
           </form>
         </div>
@@ -194,7 +194,7 @@ adminRoutes.get("/admin/users/:id", async (req, res) => {
           ? html`<div class="card">
               <h2>Delete account</h2>
               <p class="muted">Removes the account, its setup and stored keys. Bookings already in Google Calendar stay there.</p>
-              <form method="post" action="/admin/users/${u.id}/delete" data-confirm="Delete ${u.email} permanently? This can't be undone.">
+              <form method="post" action="/admin/users/${u.id}/delete" data-confirm="Delete this account?" data-confirm-detail="${u.email}, its setup and stored keys are removed permanently. This can't be undone." data-confirm-ok="Delete">
                 ${csrfField(req)}<button class="danger">Delete account</button>
               </form>
             </div>`

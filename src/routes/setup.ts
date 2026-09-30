@@ -40,9 +40,9 @@ function stepNav(active: string) {
     ["widget", "Widget"],
     ["whatsapp", "WhatsApp"],
   ];
-  return html`<p class="row" style="margin:0 0 16px;gap:14px">${items.map(([k, l]) =>
-    k === active ? html`<b>${l}</b>` : html`<a href="/setup/${k}">${l}</a>`
-  )}</p>`;
+  return html`<nav class="step-nav" aria-label="Setup steps">${items.map(([k, l]) =>
+    k === active ? html`<b aria-current="step">${l}</b>` : html`<a href="/setup/${k}">${l}</a>`
+  )}</nav>`;
 }
 
 // ---------- Dashboard ----------
@@ -72,10 +72,10 @@ setupRoutes.get("/", requireLogin, async (req, res) => {
             ${steps
               .filter((s) => s.show)
               .map(
-                (s, i) => html`<li>
+                (s, i, all) => html`<li>
                   <span class="dot ${s.done ? "done" : ""}">${s.done ? "✓" : s.optional ? "+" : i + 1}</span>
                   <span class="grow"><b>${s.title}</b>${s.optional ? html` <span class="hint">optional</span>` : ""}<small>${s.desc}</small></span>
-                  <a class="btn ${s.done ? "secondary" : ""}" href="/setup/${s.key}">${s.done ? "Edit" : "Start"}</a>
+                  <a class="btn ${s.key === all.find((x) => !x.done)?.key ? "" : "secondary"}" href="/setup/${s.key}">${s.done ? "Edit" : "Start"}</a>
                 </li>`
               )}
           </ul>
@@ -104,14 +104,14 @@ setupRoutes.get("/setup/business", requireLogin, async (req, res) => {
         <h1>Business details</h1>
         <p class="sub">The assistant uses these to answer customers and to decide which slots are free.</p>
         <div class="card">
-          <form method="post" action="/setup/business">
+          <form method="post" action="/setup/business" data-busy="Saving…">
             ${csrfField(req)}
             <label>Business name</label>
             <input type="text" name="business_name" value="${w.business_name}" placeholder="Smile Dental Clinic" required maxlength="100">
             <label>Services <span class="hint">comma separated</span></label>
             <input type="text" name="services" value="${w.services}" placeholder="Consultation, Cleaning, Filling" required maxlength="500">
             <label>Working days</label>
-            <div class="checks">${dayNames.map((d, i) => html`<label><input type="checkbox" name="days" value="${i + 1}" ${days.has(i + 1) ? "checked" : ""}> ${d}</label>`)}</div>
+            <div class="checks chips">${dayNames.map((d, i) => html`<label><input type="checkbox" name="days" value="${i + 1}" ${days.has(i + 1) ? "checked" : ""}> ${d}</label>`)}</div>
             <div class="grid">
               <div><label>Opens at</label><select name="open_hour">${hours.map((h) => html`<option value="${h}" ${h === w.open_hour ? "selected" : ""}>${fmtHour(h)}</option>`)}</select></div>
               <div><label>Closes at</label><select name="close_hour">${hours.map((h) => html`<option value="${h}" ${h === w.close_hour ? "selected" : ""}>${fmtHour(h)}</option>`)}</select></div>
@@ -225,7 +225,7 @@ setupRoutes.get("/setup/google", requireLogin, async (req, res) => {
             <li>Click the new service account → <b>Keys</b> tab → <b>Add key → Create new key → JSON</b>. A file downloads. Upload it below.</li>
           </ol>
           <p class="hint">If Google says key creation is disabled, you're on a company Google account. Use a personal Gmail account instead.</p>
-          <form method="post" action="/setup/google/key?_csrf=${req.csrf}" enctype="multipart/form-data">
+          <form method="post" action="/setup/google/key?_csrf=${req.csrf}" enctype="multipart/form-data" data-busy="Uploading…">
             <label>Key file (.json)</label>
             <input type="file" name="keyfile" accept=".json,application/json" required>
             <div class="row"><button>Upload key</button></div>
@@ -472,7 +472,7 @@ setupRoutes.get("/setup/whatsapp", requireLogin, async (req, res) => {
             ? html`<div class="card">
                 <h2>Pause WhatsApp</h2>
                 <p class="muted">The assistant stops replying on WhatsApp. You can reconnect any time.</p>
-                <form method="post" action="/setup/whatsapp/disable" data-confirm="Stop the assistant on WhatsApp?">${csrfField(req)}<button class="danger">Pause WhatsApp</button></form>
+                <form method="post" action="/setup/whatsapp/disable" data-confirm="Pause WhatsApp?" data-confirm-detail="The assistant stops replying on WhatsApp until you reconnect." data-confirm-ok="Pause">${csrfField(req)}<button class="danger">Pause WhatsApp</button></form>
               </div>`
             : ""}
           <div class="card">
