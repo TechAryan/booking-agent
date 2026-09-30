@@ -258,13 +258,59 @@
       f.querySelector("[name=close_hour]").value = String(t.close);
       f.querySelector("[name=slot_minutes]").value = String(t.slot);
       f.querySelectorAll("[name=days]").forEach(function (c) { c.checked = t.days.indexOf(parseInt(c.value, 10)) >= 0; });
-      doc.querySelectorAll("[data-template]").forEach(function (x) { x.classList.toggle("picked", x === b); });
+      var extra = f.querySelector("[name=extra_info]");
+      if (extra && t.extra && !extra.value.trim()) extra.value = t.extra;
+      doc.querySelectorAll("[data-template],[data-template-other]").forEach(function (x) { x.classList.toggle("picked", x === b); });
       f.querySelectorAll("input,select").forEach(function (el) { el.classList.add("flash-fill"); setTimeout(function () { el.classList.remove("flash-fill"); }, 900); });
       updateSlots();
       toast("ok", t.label + " template applied. Add your business name and adjust anything.");
       if (name && !name.value) setTimeout(function () { name.focus(); }, 300);
     });
   });
+
+  // Business-type picker: categories, search, and "Something else".
+  var tplBox = doc.querySelector("[data-templates]");
+  if (tplBox) {
+    var cards = Array.prototype.slice.call(tplBox.querySelectorAll("[data-template]"));
+    var search = doc.querySelector("[data-template-search]"), empty = doc.querySelector("[data-templates-empty]");
+    var cat = "popular";
+    function filter() {
+      var q = (search && search.value || "").trim().toLowerCase(), n = 0;
+      var words = q.split(/\s+/).filter(Boolean);
+      cards.forEach(function (c, i) {
+        var show = words.length
+          ? words.every(function (w) { return c.getAttribute("data-search").indexOf(w) >= 0; })
+          : (" " + c.getAttribute("data-cat") + " ").indexOf(" " + cat + " ") >= 0;
+        if (show && c.hidden) { c.style.animationDelay = Math.min(n, 12) * 25 + "ms"; c.classList.remove("in"); void c.offsetWidth; c.classList.add("in"); }
+        c.hidden = !show; if (show) n++;
+      });
+      if (empty) empty.hidden = n > 0;
+      doc.querySelectorAll("[data-template-cat]").forEach(function (b) {
+        var on = !words.length && b.getAttribute("data-template-cat") === cat;
+        b.classList.toggle("on", on); b.setAttribute("aria-selected", on ? "true" : "false");
+      });
+    }
+    doc.querySelectorAll("[data-template-cat]").forEach(function (b) {
+      b.addEventListener("click", function () { cat = b.getAttribute("data-template-cat"); if (search) search.value = ""; filter(); });
+    });
+    if (search) {
+      search.addEventListener("input", filter);
+      search.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") { e.preventDefault(); var first = cards.filter(function (c) { return !c.hidden; })[0]; if (first) first.click(); }
+      });
+    }
+    var other = tplBox.querySelector("[data-template-other]");
+    if (other) other.addEventListener("click", function () {
+      var f = doc.querySelector('form[action="/setup/business"]'); if (!f) return;
+      doc.querySelectorAll("[data-template],[data-template-other]").forEach(function (x) { x.classList.toggle("picked", x === other); });
+      var sv = f.querySelector("[name=services]"), nm = f.querySelector("[name=business_name]");
+      sv.value = ""; sv.placeholder = "e.g. Consultation call, Site visit, Order pickup";
+      var target = nm && !nm.value ? nm : sv;
+      target.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
+      setTimeout(function () { target.focus(); target.classList.add("flash-fill"); setTimeout(function () { target.classList.remove("flash-fill"); }, 900); }, 350);
+      toast("info", "Type what customers can book with you, separated by commas. Set your hours below.", 5000);
+    });
+  }
 
   // Live preview of the slots customers will be offered.
   var slotBox = doc.querySelector("[data-slot-preview]");

@@ -12,6 +12,7 @@ import { decrypt, encrypt, mask, randomToken, rateLimited } from "../security.js
 import { html, raw, Safe } from "../views/html.js";
 import { icon, tile } from "../views/icons.js";
 import { csrfField, page, withMsg } from "../views/layout.js";
+import { CATEGORIES, TEMPLATES } from "../templates.js";
 
 export const setupRoutes = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 64 * 1024, files: 1 } });
@@ -173,13 +174,7 @@ setupRoutes.get("/setup/business", requireLogin, async (req, res) => {
       body: html`${stepNav("business")}
         <div class="page-head">${tile("business", "lg")}<div><p class="eyebrow">Step 1 of 4</p><h1>Business details</h1></div></div>
         <p class="sub">The assistant uses these to answer customers and to decide which slots are free.</p>
-        ${w.business_done ? "" : html`<div class="card">
-          <h2>Quick start</h2>
-          <p class="muted" style="margin-top:-4px">Pick your type of business to fill in typical services and hours. You can change everything after.</p>
-          <div class="templates">
-            ${TEMPLATES.map((t) => html`<button type="button" class="template" data-template="${JSON.stringify(t)}"><span class="emoji" aria-hidden="true">${t.emoji}</span><b>${t.label}</b><small>${t.hint}</small></button>`)}
-          </div>
-        </div>`}
+        ${quickStart(!!w.business_done)}
         <div class="card">
           <form method="post" action="/setup/business" data-busy="Saving…">
             ${csrfField(req)}
@@ -192,7 +187,7 @@ setupRoutes.get("/setup/business", requireLogin, async (req, res) => {
             <div class="grid">
               <div><label>Opens at</label><select name="open_hour">${hours.map((h) => html`<option value="${h}" ${h === w.open_hour ? "selected" : ""}>${fmtHour(h)}</option>`)}</select></div>
               <div><label>Closes at</label><select name="close_hour">${hours.map((h) => html`<option value="${h}" ${h === w.close_hour ? "selected" : ""}>${fmtHour(h)}</option>`)}</select></div>
-              <div><label>Appointment length</label><select name="slot_minutes">${[15, 20, 30, 45, 60, 90, 120].map((m) => html`<option value="${m}" ${m === w.slot_minutes ? "selected" : ""}>${m} minutes</option>`)}</select></div>
+              <div><label>Slot length <span class="hint">per booking</span></label><select name="slot_minutes">${[15, 20, 30, 45, 60, 90, 120].map((m) => html`<option value="${m}" ${m === w.slot_minutes ? "selected" : ""}>${m} minutes</option>`)}</select></div>
               <div><label>Time zone</label><select name="timezone">${TIMEZONES.map((t) => html`<option ${t === w.timezone ? "selected" : ""}>${t}</option>`)}</select></div>
             </div>
             <div class="slot-preview" data-slot-preview aria-live="polite"></div>
@@ -205,14 +200,6 @@ setupRoutes.get("/setup/business", requireLogin, async (req, res) => {
   );
 });
 
-const TEMPLATES = [
-  { key: "dental", emoji: "🦷", label: "Dental clinic", hint: "30 min · Mon–Sat", services: "Consultation, Dental cleaning, Tooth filling, Root canal consultation, Teeth whitening", open: 10, close: 19, slot: 30, days: [1, 2, 3, 4, 5, 6] },
-  { key: "doctor", emoji: "🩺", label: "Doctor / clinic", hint: "15 min · Mon–Sat", services: "General consultation, Follow-up visit, Health check-up, Vaccination", open: 9, close: 18, slot: 15, days: [1, 2, 3, 4, 5, 6] },
-  { key: "salon", emoji: "💇", label: "Salon", hint: "45 min · all week", services: "Haircut, Hair colour, Blow-dry, Beard trim, Facial, Manicure", open: 10, close: 20, slot: 45, days: [1, 2, 3, 4, 5, 6, 7] },
-  { key: "spa", emoji: "💆", label: "Spa & wellness", hint: "60 min · all week", services: "Swedish massage, Deep tissue massage, Aromatherapy, Body scrub", open: 10, close: 21, slot: 60, days: [1, 2, 3, 4, 5, 6, 7] },
-  { key: "fitness", emoji: "🏋️", label: "Fitness trainer", hint: "60 min · Mon–Sat", services: "Personal training, Assessment session, Yoga class, Diet consultation", open: 6, close: 21, slot: 60, days: [1, 2, 3, 4, 5, 6] },
-  { key: "tutor", emoji: "📚", label: "Tutor / coach", hint: "60 min · Mon–Sat", services: "Trial class, Maths session, Science session, Exam preparation", open: 15, close: 21, slot: 60, days: [1, 2, 3, 4, 5, 6] },
-];
 
 function fmtHour(h: number) {
   return DateTime.fromObject({ hour: h }).toFormat("h a");
@@ -655,3 +642,39 @@ setupRoutes.post("/setup/whatsapp/disable", requireLogin, checkCsrf, async (req,
   await updateWorkspace(w.id, { whatsapp_enabled: 0, kapso_webhook_id: null, kapso_webhook_secret_enc: null });
   res.redirect(withMsg("/setup/whatsapp", "ok", "WhatsApp paused."));
 });
+
+function daysHint(d: number[]) {
+  if (d.length === 7) return "all week";
+  if (d.length === 6 && !d.includes(7)) return "Mon–Sat";
+  if (d.length === 5 && !d.includes(6) && !d.includes(7)) return "Mon–Fri";
+  return `${d.length} days`;
+}
+
+/** Business-type picker: search + categories + "something else". Only pre-fills the form below. */
+function quickStart(done: boolean) {
+  const body = html`
+    <div class="qs-tools">
+      <div class="search qs-search">
+        ${raw('<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>')}
+        <input type="search" placeholder="Search: influencer, kirana, consultant, turf…" aria-label="Search business types" data-template-search autocomplete="off">
+      </div>
+      <div class="chips qs-cats" role="tablist" aria-label="Business categories">
+        ${CATEGORIES.map(([k, l], i) => html`<button type="button" role="tab" class="chip ${i === 0 ? "on" : ""}" aria-selected="${i === 0 ? "true" : "false"}" data-template-cat="${k}">${l}</button>`)}
+      </div>
+    </div>
+    <div class="templates" data-templates>
+      ${TEMPLATES.map((t) => {
+        const data = { label: t.label, services: t.services, open: t.open, close: t.close, slot: t.slot, days: t.days, extra: t.extra ?? "" };
+        return html`<button type="button" class="template" data-template="${JSON.stringify(data)}" data-cat="${t.cat}${t.popular ? " popular" : ""}" data-search="${`${t.label} ${t.tags ?? ""} ${t.services}`.toLowerCase()}" ${t.popular ? "" : html`hidden`}><span class="emoji" aria-hidden="true">${t.emoji}</span><b>${t.label}</b><small>${t.slot} min · ${daysHint(t.days)}</small></button>`;
+      })}
+      <button type="button" class="template other" data-template-other><span class="emoji" aria-hidden="true">✏️</span><b>Something else</b><small>Start blank and describe it yourself</small></button>
+    </div>
+    <p class="qs-empty muted" data-templates-empty hidden>No match. Pick <b>Something else</b> and type your own services. It works for any business that takes bookings.</p>`;
+  return done
+    ? html`<details class="card qs-again"><summary><h2>Start from a business type</h2><span class="hint">Replaces services and hours below</span></summary>${body}</details>`
+    : html`<div class="card">
+        <h2>What kind of business is it?</h2>
+        <p class="muted" style="margin-top:-4px">Pick the closest match to fill in typical services and hours. You can change everything after. Nothing close? Choose <b>Something else</b>.</p>
+        ${body}
+      </div>`;
+}
