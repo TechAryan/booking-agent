@@ -1,0 +1,28 @@
+# Render Blueprint: Dashboard → New → Blueprint → pick this repo.
+# Free plan. The database lives in Turso (free), so nothing is lost when Render restarts the app.
+services:
+  - type: web
+    name: booking-agent
+    runtime: docker
+    plan: free
+    region: singapore        # closest Render region to India
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_NAME
+        value: Booking Agent
+      - key: CLAUDE_MODEL
+        value: claude-sonnet-5-5
+      - key: APP_SECRET          # encrypts customers' keys; copy it somewhere safe, never change it
+        generateValue: true
+      - key: TURSO_DATABASE_URL  # libsql://<db>-<org>.turso.io
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: ADMIN_EMAIL         # first admin, created on first start
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false

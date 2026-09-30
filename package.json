@@ -1,0 +1,38 @@
+{
+  "name": "booking-agent",
+  "version": "1.0.0",
+  "description": "Multi-tenant AI booking assistant: website widget + WhatsApp, Claude + Google Calendar",
+  "scripts": {
+    "dev": "tsx watch --disable-warning=ExperimentalWarning src/server.ts",
+    "start": "tsx --disable-warning=ExperimentalWarning src/server.ts",
+    "create-admin": "tsx --disable-warning=ExperimentalWarning scripts/create-admin.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node tests/run.mjs",
+    "test:turso": "TEST_DB=turso node tests/run.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.129.0",
+    "@kapso/whatsapp-cloud-api": "^0.3.0",
+    "@libsql/client": "^0.18.0",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^18.0.4",
+    "express": "^5.2.1",
+    "googleapis": "^182.0.0",
+    "luxon": "^3.7.2",
+    "multer": "^2.4.0",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.6",
+    "@types/luxon": "^3.7.6",
+    "@types/multer": "^2.3.0",
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  }
+}
