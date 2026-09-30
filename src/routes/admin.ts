@@ -116,6 +116,7 @@ function readForm(req: Request) {
 }
 
 function showPassword(req: Request, res: Response, u: User, pw: string, heading: string) {
+  const loginMessage = `Your ${env.appName} login\nLink: ${env.publicUrl}/login\nEmail: ${u.email}\nTemporary password: ${pw}\n(You'll set your own password when you first log in.)`;
   res.send(
     page(req, {
       title: heading,
@@ -125,10 +126,11 @@ function showPassword(req: Request, res: Response, u: User, pw: string, heading:
         <div class="card">
           <p><b>Login link:</b> <span class="mono">${env.publicUrl}/login</span></p>
           <p><b>Email:</b> <span class="mono">${u.email}</span></p>
-          <div class="secret-box"><span class="mono" id="pw">${pw}</span></div>
-          <p class="hint">They'll be asked to choose their own password on first login.</p>
+          <div class="secret-box"><span class="mono" id="pw" data-copy="${pw}" title="Click to copy">${pw}</span></div>
+          <p class="hint">Click the password to copy it. They'll be asked to choose their own password on first login.</p>
+          <pre id="login-msg">${loginMessage}</pre>
           <div class="row">
-            <button type="button" data-copy="Login: ${env.publicUrl}/login\nEmail: ${u.email}\nTemporary password: ${pw}">Copy message</button>
+            <button type="button" data-copy="${loginMessage}" data-copy-select="login-msg">Copy message</button>
             <a class="btn secondary" href="/admin/users/${u.id}">Back to account</a>
           </div>
         </div>`,

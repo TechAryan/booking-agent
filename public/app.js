@@ -1,10 +1,40 @@
 (function () {
-  // Copy buttons
+  // Copy to clipboard. Some browsers/embedded views block the Clipboard API, so fall back to
+  // execCommand, and if that is blocked too, select the text so the user can press Cmd/Ctrl+C.
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", "");
+    ta.style.position = "fixed"; ta.style.top = "-1000px"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return fallbackCopy(text); });
+    }
+    return Promise.resolve(fallbackCopy(text));
+  }
+  function selectContents(el) {
+    var r = document.createRange(); r.selectNodeContents(el);
+    var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+  }
   document.addEventListener("click", function (e) {
     var b = e.target.closest("[data-copy]");
     if (!b) return;
-    navigator.clipboard.writeText(b.getAttribute("data-copy")).then(function () {
-      var t = b.textContent; b.textContent = "Copied ✓"; setTimeout(function () { b.textContent = t; }, 1500);
+    var text = b.getAttribute("data-copy");
+    copyText(text).then(function (ok) {
+      var target = b.getAttribute("data-copy-feedback") ? document.getElementById(b.getAttribute("data-copy-feedback")) : b;
+      if (ok) {
+        if (b.tagName === "BUTTON") { var t = b.textContent; b.textContent = "Copied ✓"; setTimeout(function () { b.textContent = t; }, 1500); }
+        else { b.classList.add("copied"); setTimeout(function () { b.classList.remove("copied"); }, 1500); }
+      } else {
+        var sel = b.getAttribute("data-copy-select") ? document.getElementById(b.getAttribute("data-copy-select")) : (b.tagName === "BUTTON" ? null : b);
+        if (sel) selectContents(sel);
+        if (b.tagName === "BUTTON") { var t2 = b.textContent; b.textContent = "Press ⌘C / Ctrl+C"; setTimeout(function () { b.textContent = t2; }, 2500); }
+      }
     });
   });
   // Confirm dialogs + busy state on slow forms

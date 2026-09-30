@@ -44,13 +44,13 @@ ok(r.status === 403, "POST without CSRF blocked");
 
 await admin.page("/admin/users/new");
 r = await admin.post("/admin/users/new", { name: "Dr Priya", email: "priya@clinic.com", role: "user", status: "active", valid_until: "2099-01-01", perm_widget: "1", perm_whatsapp: "1", notes: "Paid 999 via UPI" });
-const temp = r.text.match(/id="pw">([^<]+)</)?.[1];
+const temp = r.text.match(/id="pw"[^>]*>([^<]+)</)?.[1];
 ok(!!temp, "customer created, temp password shown", r.text.slice(0, 200));
 r = await admin.post("/admin/users/new", { name: "Dup", email: "PRIYA@clinic.com", role: "user" });
 ok(dec(r.loc).includes("already exists"), "duplicate email blocked");
 // second admin
 r = await admin.post("/admin/users/new", { name: "Ops", email: "ops@test.com", role: "admin", valid_until: "" });
-ok(/id="pw">/.test(r.text), "second admin created");
+ok(/id="pw"[^>]*>/.test(r.text), "second admin created");
 
 // ---- Customer ----
 const cu = new Client();
@@ -200,7 +200,7 @@ ok(dec(r.loc).includes("subscription ended"), "expired user can't log in");
 
 // Reset password
 r = await admin.post(`/admin/users/${uid}/reset-password`, {});
-ok(/id="pw">/.test(r.text), "admin reset password shows new temp");
+ok(/id="pw"[^>]*>/.test(r.text), "admin reset password shows new temp");
 
 // Last-admin protections
 const adminId = r.text.match(/x/) && (await admin.page("/admin")).text.match(/href="\/admin\/users\/(\d+)"[^<]*<\/a><\/td>\s*<\/tr>/g);

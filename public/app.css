@@ -67,3 +67,7 @@ pre { background: var(--bg); border: 1px solid var(--line); padding: 12px; borde
 .suggest button { font-weight: 400; }
 .muted { color: var(--muted); }
 @media (max-width: 600px) { .wrap { margin: 16px auto; } .card { padding: 16px; } }
+
+[data-copy]:not(button) { cursor: pointer; }
+[data-copy]:not(button):hover { text-decoration: underline dotted; }
+.copied::after { content: " ✓ copied"; color: var(--brand); font-size: 13px; font-family: system-ui, sans-serif; }
