@@ -16,13 +16,20 @@ const paths: Record<string, string> = {
   eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   inbox: '<path d="M3 13l3-8h12l3 8v6H3z"/><path d="M3 13h5l1 3h6l1-3h5"/>',
   chevron: '<path d="M9 5l7 7-7 7"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3M14 9l2 2"/>',
+  wallet: '<rect x="3" y="6" width="18" height="14" rx="3"/><path d="M3 10h18"/><path d="M16 15h2"/><path d="M6 6l9-3 1.5 3"/>',
+  bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 21h4"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  send: '<path d="M21 3L10 14"/><path d="M21 3l-7 18-4-7-7-4z"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13M9 7V4h6v3"/>',
 };
 
 // iOS system colors per icon.
 export const tileColor: Record<string, string> = {
   business: "#007aff", claude: "#d97757", calendar: "#ff3b30", test: "#5856d6",
   widget: "#32ade6", whatsapp: "#34c759", users: "#ff9500", check: "#34c759", clock: "#ff9500", bolt: "#af52de",
-  lock: "#8e8e93", inbox: "#8e8e93",
+  lock: "#8e8e93", inbox: "#8e8e93", key: "#d97757", wallet: "#34c759", bell: "#ff9500", image: "#5856d6", send: "#34c759",
 };
 
 export function icon(name: string, size = 18): Safe {

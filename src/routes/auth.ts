@@ -1,9 +1,11 @@
 import { Router } from "express";
 import { checkCsrf, endAllSessions, endSession, requireLogin, startSession } from "../auth.js";
-import { accessProblem, getUserByEmail, setPassword } from "../models.js";
+import { accessProblem, daysLeft, getUserByEmail, setPassword } from "../models.js";
+import { DateTime } from "luxon";
+import type { User } from "../db.js";
 import { passwordProblem, rateLimited, verifyPassword } from "../security.js";
 import { html, raw } from "../views/html.js";
-import { csrfField, page, withMsg } from "../views/layout.js";
+import { csrfField, page, THEME_ICONS, themeOf, withMsg } from "../views/layout.js";
 
 export const authRoutes = Router();
 
@@ -75,9 +77,14 @@ authRoutes.get("/account/password", requireLogin, async (req, res) => {
             <div class="row"><button>Save password</button></div>
           </form>
         </div>
-        ${!first && req.user!.valid_until
-          ? html`<div class="card"><h2>Subscription</h2><p>Active until <b>${req.user!.valid_until}</b>.</p></div>`
-          : ""}`,
+        ${first ? "" : html`<div class="card">
+          <h2>Appearance</h2>
+          <p class="muted" style="margin-top:-4px">Choose how the app looks on this device.</p>
+          <div class="segmented" role="radiogroup" aria-label="Appearance">
+            ${(["light", "dark", "system"] as const).map((t) => html`<button type="button" role="radio" aria-checked="${themeOf(req) === t ? "true" : "false"}" data-set-theme="${t}">${raw(THEME_ICONS[t])}<span>${t === "system" ? "System" : t === "light" ? "Light" : "Dark"}</span></button>`)}
+          </div>
+        </div>`}
+        ${!first && req.user!.role === "user" ? subscriptionCard(req.user!) : ""}`,
     })
   );
 });
@@ -96,3 +103,19 @@ authRoutes.post("/account/password", requireLogin, checkCsrf, async (req, res) =
   await startSession(res, u.id);
   res.redirect(withMsg("/", "ok", "Password updated."));
 });
+
+function subscriptionCard(u: User) {
+  const n = daysLeft(u);
+  const pretty = u.valid_until ? DateTime.fromISO(u.valid_until).toFormat("d LLLL yyyy") : "";
+  const tone = n === null ? "ok" : n <= 3 ? "warn" : "ok";
+  // Meter: share of a 30-day period left (full when 30+ days remain).
+  const pct = n === null ? 100 : Math.max(3, Math.min(100, Math.round(((n + 1) / 31) * 100)));
+  return html`<div class="card" id="subscription">
+    <h2>Subscription</h2>
+    ${n === null
+      ? html`<p>Your access doesn't expire.</p>`
+      : html`<div class="sub-line ${tone}"><b>${n === 0 ? "Last day today" : n === 1 ? "1 day left" : `${n} days left`}</b><span class="muted">Active until ${pretty}</span></div>
+        <div class="meter ${tone}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="--w:${pct}%"></i></div>
+        ${n <= 7 ? html`<p class="muted">To renew, pay your account manager and share the payment screenshot with them. Your access is extended as soon as they record it.</p>` : ""}`}
+  </div>`;
+}

@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { db, logActivity, Workspace } from "./db.js";
 import { env } from "./env.js";
-import { decrypt } from "./security.js";
+import { claudeCredsFor } from "./models.js";
 import { hoursOf, normPhone, WorkspaceCalendar } from "./calendar.js";
 
 export type Channel = "whatsapp" | "widget" | "test";
@@ -157,11 +157,12 @@ export async function reply(
   text: string,
   opts: { trustedPhone?: string; contactName?: string } = {}
 ): Promise<string> {
-  const apiKey = decrypt(ws.anthropic_key_enc);
+  const creds = await claudeCredsFor(ws);
+  const apiKey = creds.apiKey;
   if (!apiKey) throw new Error("Claude is not set up for this business.");
   const cal = new WorkspaceCalendar(ws);
   const client = anthropicFor(apiKey);
-  const model = ws.claude_model || env.defaultModel;
+  const model = creds.model || env.defaultModel;
 
   // Who owns bookings made here: the verified WhatsApp number, or this exact chat session.
   const owner = channel === "whatsapp" ? `wa:${normPhone(opts.trustedPhone || externalId)}` : `${channel}:${externalId}`;

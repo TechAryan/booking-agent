@@ -68,11 +68,13 @@ Without Turso, `bash deploy/railway-setup.sh you@example.com` does a fresh insta
 
 **New customer**
 
-1. **Admin → + New account.** Enter name, email, valid-until date and channels. Put the plan and payment reference in "Internal notes".
-2. Copy the login message shown, with the temporary password, and send it to them on WhatsApp or email.
+1. **Admin → + New account.** Enter name, email, WhatsApp number, valid-until date (quick chips: 1 week / 1 month / 3 months / 1 year), payment status (Paid / Pending / Free trial) and channels.
+2. Copy the login message shown, or tap **Send on WhatsApp**.
 3. They log in, set their own password, and follow the setup steps. You can see their progress on their account page.
 
-**Renewal:** change "Valid until".
+**Payment received:** open their account → **Record payment** (amount, date, UPI reference, optional screenshot). Leave "Extend access" on to move "Valid until" forward at the same time. History and screenshots stay on the account.
+**Renewals:** accounts ending within 7 days appear under **Needs attention** on the Admin page, with a **Remind** button that opens WhatsApp with a ready-made message (no email service, so it costs nothing). Customers also see a banner in their dashboard from 3 days before their access ends.
+**Covering a customer's Claude usage:** Admin → **Claude keys** → add one of our keys (tested before saving). Then in their account → **Advanced** → pick the key. They skip the Claude step and never see the key. Replacing a key updates every customer on it. Off by default.
 **Stop service:** set status to Inactive. They can't log in and the bot stops replying.
 **Forgot password:** open their account → **Reset password**.
 **Another admin:** create an account with the role "Admin".

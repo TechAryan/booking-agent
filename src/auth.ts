@@ -57,7 +57,9 @@ export async function loadSession(req: Request, _res: Response, next: NextFuncti
 /** Rejects cross-site form posts. All state-changing forms include the token. */
 export function checkCsrf(req: Request, res: Response, next: NextFunction) {
   if (req.method === "GET" || req.method === "HEAD") return next();
-  const sent = (req.body?._csrf as string) || (req.headers["x-csrf-token"] as string) || "";
+  // Multipart bodies aren't parsed yet at this point, so file-upload forms send the token in the query string.
+  const fromQuery = req.is("multipart/form-data") && typeof req.query._csrf === "string" ? req.query._csrf : "";
+  const sent = (req.body?._csrf as string) || (req.headers["x-csrf-token"] as string) || fromQuery || "";
   if (!req.csrf || !safeEqual(sent, req.csrf)) {
     return res.status(403).send("Your session expired. Please go back, refresh the page and try again.");
   }

@@ -39,6 +39,14 @@ app.use(express.urlencoded({ extended: false, limit: "100kb" }));
 app.use(express.json({ limit: "100kb" }));
 app.use(loadSession);
 
+// Appearance preference (harmless, so no login or CSRF needed). Remembered for a year on this device.
+app.post("/theme", (req, res) => {
+  const t = String(req.body?.theme || "");
+  if (!["light", "dark", "system"].includes(t)) return res.status(400).json({ ok: false });
+  res.cookie("theme", t, { maxAge: 365 * 86400_000, sameSite: "lax", secure: env.isProd, path: "/" });
+  res.json({ ok: true });
+});
+
 app.use(authRoutes);
 app.use(adminRoutes);
 app.use(setupRoutes);
@@ -46,7 +54,7 @@ app.use(setupRoutes);
 app.use((_req, res) => res.status(404).send("Page not found."));
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
-  if (err?.code === "LIMIT_FILE_SIZE") return res.status(400).send("That file is too big. Upload the small .json key file from Google.");
+  if (err?.code === "LIMIT_FILE_SIZE") return res.status(400).send("That file is too big. Please go back and choose a smaller file.");
   res.status(500).send("Something went wrong. Please go back and try again.");
 });
 

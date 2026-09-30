@@ -1,6 +1,6 @@
 import { DateTime } from "luxon";
 import { db, User, Workspace } from "./db.js";
-import { hashPassword, randomToken } from "./security.js";
+import { decrypt, hashPassword, randomToken } from "./security.js";
 import { env } from "./env.js";
 
 // ---------- Users ----------
@@ -13,9 +13,10 @@ export function getUserByEmail(email: string): Promise<User | undefined> {
   return db.get<User>("SELECT * FROM users WHERE email = ? COLLATE NOCASE", email.trim());
 }
 
-export async function listUsers(): Promise<(User & { business_name: string | null; setup: string })[]> {
+export async function listUsers(): Promise<(User & { business_name: string | null; setup: string; shared_key_id: number | null; last_paid_on: string | null })[]> {
   const rows = await db.all(
-    `SELECT u.*, w.business_name, w.business_done, w.claude_ok, w.google_ok, w.tested, w.widget_enabled, w.whatsapp_enabled
+    `SELECT u.*, w.business_name, w.business_done, w.claude_ok, w.google_ok, w.tested, w.widget_enabled, w.whatsapp_enabled, w.shared_key_id,
+       (SELECT MAX(paid_on) FROM payments p WHERE p.user_id = u.id) AS last_paid_on
      FROM users u LEFT JOIN workspaces w ON w.user_id = u.id ORDER BY u.role DESC, u.created_at DESC`
   );
   return rows.map((r) => ({ ...r, setup: setupSummary(r) }));
@@ -72,8 +73,21 @@ export async function deleteUser(userId: number) {
     await db.run("DELETE FROM conversations WHERE workspace_id = ?", ws.id);
     await db.run("DELETE FROM workspaces WHERE id = ?", ws.id);
   }
+  await db.run("DELETE FROM payments WHERE user_id = ?", userId);
   await db.run("DELETE FROM sessions WHERE user_id = ?", userId);
   await db.run("DELETE FROM users WHERE id = ?", userId);
+}
+
+export function todayIST(): string {
+  return DateTime.now().setZone("Asia/Kolkata").toISODate()!;
+}
+
+/** Whole days of access left (0 = today is the last day). null = no expiry. Negative = expired. */
+export function daysLeft(u: Pick<User, "valid_until">): number | null {
+  if (!u.valid_until) return null;
+  const end = DateTime.fromISO(u.valid_until, { zone: "Asia/Kolkata" });
+  const today = DateTime.fromISO(todayIST(), { zone: "Asia/Kolkata" });
+  return Math.round(end.diff(today, "days").days);
 }
 
 /** Why this user can't use the product right now, or null if they can. */
@@ -130,7 +144,7 @@ const WS_COLUMNS = new Set([
   "business_name", "timezone", "open_hour", "close_hour", "working_days", "slot_minutes", "services", "extra_info",
   "business_done", "anthropic_key_enc", "claude_model", "claude_ok", "google_sa_enc", "google_sa_email",
   "google_calendar_id", "google_ok", "tested", "widget_enabled", "widget_color", "widget_greeting", "kapso_key_enc",
-  "kapso_phone_number_id", "kapso_display_number", "kapso_webhook_id", "kapso_webhook_secret_enc", "whatsapp_enabled",
+  "kapso_phone_number_id", "kapso_display_number", "kapso_webhook_id", "kapso_webhook_secret_enc", "whatsapp_enabled", "shared_key_id",
 ]);
 
 export async function updateWorkspace(id: number, fields: Partial<Workspace>) {
@@ -147,4 +161,60 @@ export function recentActivity(workspaceId: number, limit = 20) {
     workspaceId,
     limit
   );
+}
+
+// ---------- Claude keys we provide ----------
+
+export interface ClaudeKey { id: number; name: string; key_enc: string; model: string; created_at: string; used_by?: number }
+
+export async function listClaudeKeys(): Promise<ClaudeKey[]> {
+  const rows = await db.all<ClaudeKey>(
+    "SELECT k.*, (SELECT COUNT(*) FROM workspaces w WHERE w.shared_key_id = k.id) AS used_by FROM claude_keys k ORDER BY k.name"
+  );
+  return rows.map((r) => ({ ...r, used_by: Number(r.used_by ?? 0) }));
+}
+
+export function getClaudeKey(id: number) {
+  return db.get<ClaudeKey>("SELECT * FROM claude_keys WHERE id = ?", id);
+}
+
+/** The key + model a workspace should use: ours if we provide one, else their own. */
+export async function claudeCredsFor(ws: Workspace): Promise<{ apiKey: string | null; model: string | null; shared: boolean }> {
+  if (ws.shared_key_id) {
+    const k = await getClaudeKey(ws.shared_key_id);
+    if (k) return { apiKey: decrypt(k.key_enc), model: k.model || null, shared: true };
+  }
+  return { apiKey: decrypt(ws.anthropic_key_enc), model: ws.claude_model, shared: false };
+}
+
+/** Give a customer one of our keys (or take it back with null). */
+export async function assignSharedKey(userId: number, keyId: number | null) {
+  const ws = await getWorkspaceForUser(userId);
+  if ((ws.shared_key_id ?? null) === keyId) return;
+  await db.run(
+    "UPDATE workspaces SET shared_key_id = ?, claude_ok = ? WHERE id = ?",
+    keyId,
+    keyId ? 1 : ws.anthropic_key_enc ? 1 : 0,
+    ws.id
+  );
+}
+
+// ---------- Payments ----------
+
+export interface Payment {
+  id: number; user_id: number; amount: string; paid_on: string; method: string; reference: string; note: string;
+  screenshot: string | null; screenshot_type: string | null; extended_to: string | null; recorded_by: string; created_at: string;
+}
+
+export function listPayments(userId: number) {
+  return db.all<Omit<Payment, "screenshot"> & { has_shot: number }>(
+    `SELECT id, user_id, amount, paid_on, method, reference, note, screenshot_type, extended_to, recorded_by, created_at,
+       CASE WHEN screenshot IS NULL THEN 0 ELSE 1 END AS has_shot
+     FROM payments WHERE user_id = ? ORDER BY paid_on DESC, id DESC`,
+    userId
+  );
+}
+
+export function getPayment(id: number) {
+  return db.get<Payment>("SELECT * FROM payments WHERE id = ?", id);
 }

@@ -171,6 +171,32 @@ CREATE TABLE IF NOT EXISTS activity (
 );
 CREATE INDEX IF NOT EXISTS activity_ws ON activity(workspace_id, id DESC);
 
+-- Claude keys we (the admins) own and can hand to customers. Customers never see these.
+CREATE TABLE IF NOT EXISTS claude_keys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  key_enc TEXT NOT NULL,
+  model TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Payments customers made to us (recorded by hand by an admin).
+CREATE TABLE IF NOT EXISTS payments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  amount TEXT NOT NULL DEFAULT '',
+  paid_on TEXT NOT NULL,                    -- YYYY-MM-DD
+  method TEXT NOT NULL DEFAULT '',
+  reference TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  screenshot TEXT,                          -- base64 image, small (compressed in the browser)
+  screenshot_type TEXT,
+  extended_to TEXT,                         -- validity was extended to this date
+  recorded_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS payments_user ON payments(user_id, paid_on DESC);
+
 CREATE TABLE IF NOT EXISTS seen_messages (
   id TEXT PRIMARY KEY,
   created_at INTEGER NOT NULL
@@ -181,6 +207,7 @@ CREATE TABLE IF NOT EXISTS seen_messages (
 export async function initDb() {
   backend = env.tursoUrl ? await tursoBackend() : await localBackend();
   await db.exec(SCHEMA);
+  await migrate();
   const cleanup = async () => {
     await db.run("DELETE FROM sessions WHERE expires_at < ?", Date.now());
     await db.run("DELETE FROM seen_messages WHERE created_at < ?", Date.now() - 3 * 86400_000);
@@ -189,6 +216,19 @@ export async function initDb() {
   setInterval(() => cleanup().catch((e) => console.error("cleanup failed", e)), 3600_000).unref();
 }
 
+// Columns added after launch. ADD COLUMN fails if it already exists, which is fine.
+const MIGRATIONS: [string, string, string][] = [
+  ["users", "payment_status", "TEXT NOT NULL DEFAULT 'pending'"], // paid | pending | trial
+  ["users", "phone", "TEXT NOT NULL DEFAULT ''"],
+  ["workspaces", "shared_key_id", "INTEGER"],                    // a claude_keys row we provide, instead of their own key
+];
+async function migrate() {
+  for (const [table, col, def] of MIGRATIONS) {
+    const cols = await db.all(`PRAGMA table_info(${table})`);
+    if (cols.some((c) => c.name === col)) continue;
+    await db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+  }
+}
 
 // ---------- Types ----------
 
@@ -206,6 +246,8 @@ export interface User {
   notes: string;
   created_at: string;
   last_login_at: string | null;
+  payment_status: "paid" | "pending" | "trial";
+  phone: string;
 }
 
 export interface Workspace {
@@ -238,6 +280,7 @@ export interface Workspace {
   kapso_webhook_id: string | null;
   kapso_webhook_secret_enc: string | null;
   whatsapp_enabled: number;
+  shared_key_id: number | null;
   updated_at: string;
 }
 

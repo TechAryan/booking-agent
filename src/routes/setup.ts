@@ -16,7 +16,7 @@ import { csrfField, page, withMsg } from "../views/layout.js";
 export const setupRoutes = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 64 * 1024, files: 1 } });
 
-const MODELS = [
+export const MODELS = [
   { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (recommended: fast and smart)" },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5 (cheapest)" },
   { id: "claude-opus-5-5", label: "Claude Opus 5.5 (most capable, costs more)" },
@@ -59,7 +59,7 @@ setupRoutes.get("/", requireLogin, async (req, res) => {
   const u = req.user!;
   const steps: { key: string; title: string; desc: string; done: boolean; show: boolean; optional?: boolean }[] = [
     { key: "business", title: "Business details", desc: "Name, services, working hours", done: !!w.business_done, show: true },
-    { key: "claude", title: "Connect Claude", desc: "The AI that talks to your customers", done: !!w.claude_ok, show: true },
+    { key: "claude", title: "Connect Claude", desc: w.shared_key_id ? "Included in your plan, nothing to do" : "The AI that talks to your customers", done: !!w.claude_ok, show: true },
     { key: "google", title: "Connect Google Calendar", desc: "Where bookings are saved", done: !!w.google_ok, show: true },
     { key: "test", title: "Test your assistant", desc: "Chat with it and make a test booking", done: !!w.tested, show: true },
     { key: "widget", title: "Website chat widget", desc: "A booking chat on your website", done: !!w.widget_enabled, show: !!u.perm_widget, optional: true },
@@ -86,7 +86,19 @@ setupRoutes.get("/", requireLogin, async (req, res) => {
         <p class="eyebrow">${greet}${firstName(u.name) ? `, ${firstName(u.name)}` : ""}</p>
         <h1>${w.business_name || "Your booking assistant"}</h1>
         ${u.role === "admin" && !w.business_done ? html`<div class="flash info" data-toast="info">You're an admin. Manage accounts in Admin, or set up a business here to try the product yourself.</div>` : ""}
-        <div class="card hero">
+        ${coreDone === 0 && !live.length
+          ? html`<div class="card welcome">
+              <h2>Get live in 4 simple steps</h2>
+              <p class="muted">About 20 minutes. Every step checks your details before saving, so nothing breaks.</p>
+              <ol class="journey">
+                ${[["business", "Tell us about your business", "Name, services and hours"], ["claude", "Connect the AI", w.shared_key_id ? "Already included for you" : "Paste one key"], ["calendar", "Connect your calendar", "Where bookings land"], ["test", "Try it yourself", "Book a test slot"]].map(
+                  ([ic, t, d], i) => html`<li style="--i:${i}" data-n="${i + 1}">${tile(ic!, "lg")}<b>${t}</b><span>${d}</span></li>`
+                )}
+              </ol>
+              <a class="btn big" href="/setup/business">Start setup ${icon("chevron", 16)}</a>
+            </div>`
+          : ""}
+        <div class="card hero" ${coreDone === 0 && !live.length ? html`hidden` : ""}>
           <div class="ring" style="--pct:${pct}">
             <svg viewBox="0 0 80 80" aria-hidden="true"><circle class="track" cx="40" cy="40" r="${R}"/><circle class="bar" cx="40" cy="40" r="${R}" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${C.toFixed(1)}" data-offset="${(C * (1 - pct / 100)).toFixed(1)}"/></svg>
             <b>${coreDone}<small>/${core.length}</small></b>
@@ -100,7 +112,7 @@ setupRoutes.get("/", requireLogin, async (req, res) => {
             ${next ? html`<a class="btn" href="/setup/${next.key}">${next.done ? "Edit" : "Continue"}: ${next.title} ${icon("chevron", 14)}</a>` : ""}
           </div>
         </div>
-        <div class="stats">
+        <div class="stats" ${coreDone === 0 && !live.length ? html`hidden` : ""}>
           <div class="stat card"><span class="tile sm" style="--tile:#34c759">${icon("calendar", 17)}</span><b data-count="${weekBookings}">${weekBookings}</b><span>Bookings this week</span></div>
           <div class="stat card"><span class="tile sm" style="--tile:#5856d6">${icon("test", 17)}</span><b data-count="${chats}">${chats}</b><span>Conversations</span></div>
           <div class="stat card"><span class="tile sm" style="--tile:#ff9500">${icon("bolt", 17)}</span><b data-count="${allBookings}">${allBookings}</b><span>Total bookings</span></div>
@@ -161,6 +173,13 @@ setupRoutes.get("/setup/business", requireLogin, async (req, res) => {
       body: html`${stepNav("business")}
         <div class="page-head">${tile("business", "lg")}<div><p class="eyebrow">Step 1 of 4</p><h1>Business details</h1></div></div>
         <p class="sub">The assistant uses these to answer customers and to decide which slots are free.</p>
+        ${w.business_done ? "" : html`<div class="card">
+          <h2>Quick start</h2>
+          <p class="muted" style="margin-top:-4px">Pick your type of business to fill in typical services and hours. You can change everything after.</p>
+          <div class="templates">
+            ${TEMPLATES.map((t) => html`<button type="button" class="template" data-template="${JSON.stringify(t)}"><span class="emoji" aria-hidden="true">${t.emoji}</span><b>${t.label}</b><small>${t.hint}</small></button>`)}
+          </div>
+        </div>`}
         <div class="card">
           <form method="post" action="/setup/business" data-busy="Saving…">
             ${csrfField(req)}
@@ -176,6 +195,7 @@ setupRoutes.get("/setup/business", requireLogin, async (req, res) => {
               <div><label>Appointment length</label><select name="slot_minutes">${[15, 20, 30, 45, 60, 90, 120].map((m) => html`<option value="${m}" ${m === w.slot_minutes ? "selected" : ""}>${m} minutes</option>`)}</select></div>
               <div><label>Time zone</label><select name="timezone">${TIMEZONES.map((t) => html`<option ${t === w.timezone ? "selected" : ""}>${t}</option>`)}</select></div>
             </div>
+            <div class="slot-preview" data-slot-preview aria-live="polite"></div>
             <label>Extra information for the assistant <span class="hint">address, parking, prices it may share, what it must never do, languages</span></label>
             <textarea name="extra_info" maxlength="3000" placeholder="We're at 12 MG Road, 2nd floor. Parking in the basement.&#10;Don't give medical advice.&#10;Reply in Hindi if the customer writes in Hindi.">${w.extra_info}</textarea>
             <div class="row"><button>Save and continue</button></div>
@@ -184,6 +204,15 @@ setupRoutes.get("/setup/business", requireLogin, async (req, res) => {
     })
   );
 });
+
+const TEMPLATES = [
+  { key: "dental", emoji: "🦷", label: "Dental clinic", hint: "30 min · Mon–Sat", services: "Consultation, Dental cleaning, Tooth filling, Root canal consultation, Teeth whitening", open: 10, close: 19, slot: 30, days: [1, 2, 3, 4, 5, 6] },
+  { key: "doctor", emoji: "🩺", label: "Doctor / clinic", hint: "15 min · Mon–Sat", services: "General consultation, Follow-up visit, Health check-up, Vaccination", open: 9, close: 18, slot: 15, days: [1, 2, 3, 4, 5, 6] },
+  { key: "salon", emoji: "💇", label: "Salon", hint: "45 min · all week", services: "Haircut, Hair colour, Blow-dry, Beard trim, Facial, Manicure", open: 10, close: 20, slot: 45, days: [1, 2, 3, 4, 5, 6, 7] },
+  { key: "spa", emoji: "💆", label: "Spa & wellness", hint: "60 min · all week", services: "Swedish massage, Deep tissue massage, Aromatherapy, Body scrub", open: 10, close: 21, slot: 60, days: [1, 2, 3, 4, 5, 6, 7] },
+  { key: "fitness", emoji: "🏋️", label: "Fitness trainer", hint: "60 min · Mon–Sat", services: "Personal training, Assessment session, Yoga class, Diet consultation", open: 6, close: 21, slot: 60, days: [1, 2, 3, 4, 5, 6] },
+  { key: "tutor", emoji: "📚", label: "Tutor / coach", hint: "60 min · Mon–Sat", services: "Trial class, Maths session, Science session, Exam preparation", open: 15, close: 21, slot: 60, days: [1, 2, 3, 4, 5, 6] },
+];
 
 function fmtHour(h: number) {
   return DateTime.fromObject({ hour: h }).toFormat("h a");
@@ -208,13 +237,27 @@ setupRoutes.post("/setup/business", requireLogin, checkCsrf, async (req, res) =>
     extra_info: String(b.extra_info || "").slice(0, 3000),
     business_done: 1,
   });
-  res.redirect(withMsg((await ws(req)).claude_ok ? "/" : "/setup/claude", "ok", "Business details saved."));
+  const after = await ws(req);
+  res.redirect(withMsg(!after.claude_ok ? "/setup/claude" : !after.google_ok ? "/setup/google" : "/", "ok", "Business details saved."));
 });
 
 // ---------- Step 2: Claude ----------
 
 setupRoutes.get("/setup/claude", requireLogin, async (req, res) => {
   const w = await ws(req);
+  if (w.shared_key_id) {
+    return res.send(
+      page(req, {
+        title: "Claude",
+        body: html`${stepNav("claude")}
+          <div class="page-head">${tile("claude", "lg")}<div><p class="eyebrow">Step 2 of 4</p><h1>Claude is included</h1></div></div>
+          <div class="card provided">
+            <div class="done-line big">${tile("check", "lg")}<span><b>Nothing to do here</b><small>Your plan includes the AI. Your account manager has connected it for you, and usage is covered.</small></span></div>
+            <div class="row"><a class="btn" href="${w.google_ok ? "/" : "/setup/google"}">Continue ${icon("chevron", 14)}</a></div>
+          </div>`,
+      })
+    );
+  }
   const current = decrypt(w.anthropic_key_enc);
   res.send(
     page(req, {
@@ -250,6 +293,7 @@ setupRoutes.get("/setup/claude", requireLogin, async (req, res) => {
 setupRoutes.post("/setup/claude", requireLogin, checkCsrf, async (req, res) => {
   const w = await ws(req);
   const back = "/setup/claude";
+  if (w.shared_key_id) return res.redirect(withMsg("/setup/google", "msg", "Claude is already included in your plan."));
   if (rateLimited(`claude-test:${w.id}`, 10, 10 * 60_000)) return res.redirect(withMsg(back, "err", "Too many tries. Wait a few minutes."));
   const key = String(req.body.api_key || "").trim() || decrypt(w.anthropic_key_enc) || "";
   const model = MODELS.some((m) => m.id === req.body.model) ? req.body.model : env.defaultModel;
@@ -284,11 +328,15 @@ setupRoutes.get("/setup/google", requireLogin, async (req, res) => {
           </ol>
           <p class="hint">If Google says key creation is disabled, you're on a company Google account. Use a personal Gmail account instead.</p>
           <form method="post" action="/setup/google/key?_csrf=${req.csrf}" enctype="multipart/form-data" data-busy="Uploading…">
-            <label>Key file (.json)</label>
-            <input type="file" name="keyfile" accept=".json,application/json" required>
+            <label class="dropzone" data-dropzone>
+              <input type="file" name="keyfile" accept=".json,application/json" required>
+              <span class="dz-icon" aria-hidden="true">${icon("inbox", 26)}</span>
+              <b data-dz-title>${w.google_sa_email ? "Replace the key file" : "Drop the key file here"}</b>
+              <span data-dz-sub>or click to choose the .json file you downloaded</span>
+            </label>
             <div class="row"><button>Upload key</button></div>
           </form>
-          ${w.google_sa_email ? html`<p class="flash ok" style="margin-top:12px">Key uploaded for <span class="mono">${w.google_sa_email}</span></p>` : ""}
+          ${w.google_sa_email ? html`<div class="done-line">${tile("check")}<span>Key uploaded for <span class="mono">${w.google_sa_email}</span></span></div>` : ""}
         </div>
         <div class="card" ${w.google_sa_email ? "" : html`style="opacity:.6"`}>
           <h2>Part B: share your calendar</h2>
@@ -399,10 +447,11 @@ setupRoutes.post("/setup/test/message", requireLogin, checkCsrf, async (req, res
   const text = String(req.body.text || "").trim();
   if (!text) return res.status(400).json({ error: "Empty message" });
   try {
+    const before = Number((await db.get("SELECT COUNT(*) AS c FROM activity WHERE workspace_id=? AND channel='test' AND kind='booking'", w.id))?.c ?? 0);
     const out = await reply(w, "test", `user-${req.user!.id}`, text);
-    const booked = await db.get("SELECT 1 FROM activity WHERE workspace_id=? AND channel='test' AND kind='booking' LIMIT 1", w.id);
-    if (booked && !w.tested) await updateWorkspace(w.id, { tested: 1 });
-    res.json({ reply: out });
+    const after = Number((await db.get("SELECT COUNT(*) AS c FROM activity WHERE workspace_id=? AND channel='test' AND kind='booking'", w.id))?.c ?? 0);
+    if (after > 0 && !w.tested) await updateWorkspace(w.id, { tested: 1 });
+    res.json({ reply: out, booked: after > before, firstBooking: before === 0 && after > 0 });
   } catch (e: any) {
     await logActivity(w.id, "error", "test", e.message);
     res.status(500).json({ error: `Something went wrong: ${e.message}` });
@@ -439,12 +488,32 @@ setupRoutes.get("/setup/widget", requireLogin, async (req, res) => {
           <div class="card">
             <form method="post" action="/setup/widget">
               ${csrfField(req)}
-              <div class="grid">
-                <div><label>Button colour</label><input type="text" name="color" value="${w.widget_color}" pattern="#[0-9a-fA-F]{6}" placeholder="#16a34a"></div>
-                <div><label>Greeting</label><input type="text" name="greeting" value="${w.widget_greeting}" maxlength="200" placeholder="Hi! Want to book an appointment?"></div>
+              <div class="designer">
+                <div class="controls">
+                <div>
+                  <label>Colour</label>
+                  <div class="swatches" data-swatches>
+                    ${["#0a84ff", "#34c759", "#ff9500", "#ff375f", "#af52de", "#5856d6", "#1d1d1f"].map((c) => html`<button type="button" class="swatch" style="--c:${c}" data-color="${c}" aria-label="Colour ${c}"></button>`)}
+                    <label class="swatch custom" title="Pick any colour"><input type="color" name="color" value="${/^#[0-9a-fA-F]{6}$/.test(w.widget_color) ? w.widget_color : "#0a84ff"}" aria-label="Custom colour"></label>
+                  </div>
+                </div>
+                <div><label>Greeting</label><input type="text" name="greeting" value="${w.widget_greeting}" maxlength="200" placeholder="Hi! Want to book an appointment?" data-preview-greeting></div>
+              <div class="checks" style="margin-top:18px"><label><input type="checkbox" name="enabled" value="1" ${w.widget_enabled ? "checked" : ""}> Widget is live on my website</label></div>
+              <div class="row"><button>Save</button> <a class="btn secondary" href="/w/${w.public_id}" target="_blank">Open full preview</a></div>
+                </div>
+                <div class="preview-col">
+                  <label>Live preview</label>
+              <div class="widget-preview" data-widget-preview style="--accent:${/^#[0-9a-fA-F]{6}$/.test(w.widget_color) ? w.widget_color : "#0a84ff"}">
+                <div class="wp-head"><span class="wp-av">${(w.business_name || "B").trim().charAt(0).toUpperCase()}</span><div><b>${w.business_name}</b><small>Usually replies instantly</small></div></div>
+                <div class="wp-body">
+                  <div class="wp-b" data-greeting-out>${w.widget_greeting || `Hi! I can help you book an appointment at ${w.business_name}. What would you like?`}</div>
+                  <div class="wp-u">Anything free tomorrow evening?</div>
+                  <div class="wp-b"><span class="typing"><i></i><i></i><i></i></span></div>
+                </div>
+                <span class="wp-fab">${icon("test", 22)}</span>
               </div>
-              <div class="checks" style="margin-top:12px"><label><input type="checkbox" name="enabled" value="1" ${w.widget_enabled ? "checked" : ""}> Widget is live</label></div>
-              <div class="row"><button>Save</button> <a class="btn secondary" href="/w/${w.public_id}" target="_blank">Preview</a></div>
+                </div>
+              </div>
             </form>
           </div>
           ${w.widget_enabled

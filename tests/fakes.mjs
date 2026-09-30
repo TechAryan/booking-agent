@@ -40,6 +40,7 @@ http.createServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
     const send = (code, obj) => { res.statusCode = code; res.end(obj === undefined ? "" : JSON.stringify(obj)); };
     if (req.url.startsWith("/v1/messages")) {
+      log({ claude: true, key: req.headers["x-api-key"], model: j.model });
       const [c, o] = claude(j, req.headers["x-api-key"]);
       return send(c, o);
     }

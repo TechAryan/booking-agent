@@ -158,6 +158,33 @@
     });
   });
 
+  // ---------------------------------------------------------------- appearance (light / dark / system)
+  var ICONS = {};
+  doc.querySelectorAll(".theme-pick [data-set-theme]").forEach(function (b) { ICONS[b.getAttribute("data-set-theme")] = b.querySelector("svg").outerHTML; });
+  function setTheme(t) {
+    var root = doc.documentElement;
+    root.classList.add("theming");
+    root.setAttribute("data-theme", t);
+    setTimeout(function () { root.classList.remove("theming"); }, 400);
+    doc.querySelectorAll("[data-set-theme]").forEach(function (b) { b.setAttribute("aria-checked", b.getAttribute("data-set-theme") === t ? "true" : "false"); });
+    var tg = doc.querySelector("[data-theme-toggle]"); if (tg && ICONS[t]) tg.innerHTML = ICONS[t];
+    var dark = t === "dark" || (t === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    var meta = doc.querySelector('meta[name="theme-color"]'); if (meta) meta.setAttribute("content", dark ? "#000000" : "#f5f5f7");
+    fetch("/theme", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ theme: t }) }).catch(function () {});
+  }
+  var pick = doc.querySelector(".theme-pick");
+  if (pick) {
+    var tgl = pick.querySelector("[data-theme-toggle]");
+    tgl.addEventListener("click", function (e) { e.stopPropagation(); var open = pick.classList.toggle("open"); tgl.setAttribute("aria-expanded", open ? "true" : "false"); });
+    doc.addEventListener("click", function (e) { if (!e.target.closest(".theme-pick")) { pick.classList.remove("open"); tgl.setAttribute("aria-expanded", "false"); } });
+    doc.addEventListener("keydown", function (e) { if (e.key === "Escape") pick.classList.remove("open"); });
+  }
+  doc.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-set-theme]"); if (!b) return;
+    setTheme(b.getAttribute("data-set-theme"));
+    if (pick) setTimeout(function () { pick.classList.remove("open"); }, 150);
+  });
+
   // ---------------------------------------------------------------- dashboard polish
   var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   // Progress ring fills in.
@@ -217,7 +244,274 @@
   window.appConfetti = confetti;
   doc.querySelectorAll('[data-toast="ok"]').forEach(function (el) { if (/\bis live\b/i.test(el.textContent)) setTimeout(confetti, 250); });
 
+  // ---------------------------------------------------------------- guided setup helpers
+  function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }
+
+  // Business templates fill the form; everything stays editable.
+  doc.querySelectorAll("[data-template]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var t; try { t = JSON.parse(b.getAttribute("data-template")); } catch (e) { return; }
+      var f = doc.querySelector('form[action="/setup/business"]'); if (!f) return;
+      var name = f.querySelector("[name=business_name]");
+      f.querySelector("[name=services]").value = t.services;
+      f.querySelector("[name=open_hour]").value = String(t.open);
+      f.querySelector("[name=close_hour]").value = String(t.close);
+      f.querySelector("[name=slot_minutes]").value = String(t.slot);
+      f.querySelectorAll("[name=days]").forEach(function (c) { c.checked = t.days.indexOf(parseInt(c.value, 10)) >= 0; });
+      doc.querySelectorAll("[data-template]").forEach(function (x) { x.classList.toggle("picked", x === b); });
+      f.querySelectorAll("input,select").forEach(function (el) { el.classList.add("flash-fill"); setTimeout(function () { el.classList.remove("flash-fill"); }, 900); });
+      updateSlots();
+      toast("ok", t.label + " template applied. Add your business name and adjust anything.");
+      if (name && !name.value) setTimeout(function () { name.focus(); }, 300);
+    });
+  });
+
+  // Live preview of the slots customers will be offered.
+  var slotBox = doc.querySelector("[data-slot-preview]");
+  function fmt(h, m) { var ap = h >= 12 ? "pm" : "am", hh = h % 12 || 12; return hh + (m ? ":" + (m < 10 ? "0" : "") + m : "") + " " + ap; }
+  function updateSlots() {
+    if (!slotBox) return;
+    var f = slotBox.closest("form");
+    var o = parseInt(f.querySelector("[name=open_hour]").value, 10), c = parseInt(f.querySelector("[name=close_hour]").value, 10);
+    var len = parseInt(f.querySelector("[name=slot_minutes]").value, 10);
+    var days = Array.prototype.filter.call(f.querySelectorAll("[name=days]"), function (x) { return x.checked; }).length;
+    if (!(c > o)) { slotBox.className = "slot-preview warn"; slotBox.textContent = "Closing time must be after opening time."; return; }
+    var slots = [], t = o * 60;
+    while (t + len <= c * 60) { slots.push(fmt(Math.floor(t / 60), t % 60)); t += len; }
+    slotBox.className = "slot-preview";
+    slotBox.innerHTML = "";
+    var head = doc.createElement("div"); head.className = "sp-head";
+    head.innerHTML = "<b></b><span></span>";
+    head.querySelector("b").textContent = "Customers will see";
+    head.querySelector("span").textContent = slots.length + " slots a day · " + days + " day" + (days === 1 ? "" : "s") + " a week";
+    slotBox.appendChild(head);
+    var row = doc.createElement("div"); row.className = "sp-row";
+    slots.slice(0, 10).forEach(function (x, i) { var chip = doc.createElement("span"); chip.textContent = x; chip.style.animationDelay = (i * 25) + "ms"; row.appendChild(chip); });
+    if (slots.length > 10) { var more = doc.createElement("span"); more.className = "more"; more.textContent = "+" + (slots.length - 10) + " more"; row.appendChild(more); }
+    slotBox.appendChild(row);
+  }
+  if (slotBox) { slotBox.closest("form").addEventListener("change", updateSlots); updateSlots(); }
+
+  // Guide steps become a checklist the user ticks off (remembered on this device).
+  doc.querySelectorAll("ol.guide").forEach(function (ol, n) {
+    var key = "guide:" + location.pathname + ":" + n, saved = {};
+    try { saved = JSON.parse(store(key) || "{}"); } catch (e) {}
+    var items = ol.querySelectorAll(":scope > li");
+    var bar = doc.createElement("div"); bar.className = "guide-progress";
+    bar.innerHTML = '<span></span><div class="gp-track"><i></i></div>';
+    ol.parentNode.insertBefore(bar, ol);
+    function refresh() {
+      var done = ol.querySelectorAll(":scope > li.ticked").length;
+      bar.querySelector("span").textContent = done === items.length ? "All done ✓" : done + " of " + items.length + " done";
+      bar.querySelector("i").style.width = (done / items.length * 100) + "%";
+      bar.classList.toggle("complete", done === items.length);
+    }
+    items.forEach(function (li, i) {
+      var b = doc.createElement("button"); b.type = "button"; b.className = "tick-btn"; b.setAttribute("aria-label", "Mark step " + (i + 1) + " done");
+      b.textContent = String(i + 1);
+      li.insertBefore(b, li.firstChild); li.classList.add("checkable");
+      if (saved[i]) li.classList.add("ticked");
+      b.addEventListener("click", function () {
+        li.classList.toggle("ticked"); saved[i] = li.classList.contains("ticked"); store(key, JSON.stringify(saved)); refresh();
+        b.setAttribute("aria-pressed", saved[i] ? "true" : "false");
+      });
+    });
+    refresh();
+  });
+
+  // Instant check of the Claude key format.
+  var keyIn = doc.querySelector('form[action="/setup/claude"] [name=api_key]');
+  if (keyIn) {
+    var hint = doc.createElement("div"); hint.className = "field-hint"; (keyIn.closest(".reveal") || keyIn).insertAdjacentElement("afterend", hint);
+    keyIn.addEventListener("input", function () {
+      var v = keyIn.value.trim();
+      if (!v) { hint.className = "field-hint"; hint.textContent = ""; return; }
+      if (/^sk-ant-[A-Za-z0-9_-]{20,}$/.test(v)) { hint.className = "field-hint ok"; hint.textContent = "✓ Looks like a valid key. Click Test and save."; }
+      else if (v.indexOf("sk-ant-") !== 0) { hint.className = "field-hint bad"; hint.textContent = "Anthropic keys start with sk-ant-"; }
+      else { hint.className = "field-hint"; hint.textContent = "Keep pasting… the key is longer."; }
+    });
+  }
+
+  // Drag & drop for the Google key: read it in the browser first, then upload.
+  doc.querySelectorAll("[data-dropzone]").forEach(function (dz) {
+    var input = dz.querySelector("input[type=file]"), form = dz.closest("form");
+    var title = dz.querySelector("[data-dz-title]"), sub = dz.querySelector("[data-dz-sub]");
+    ["dragenter", "dragover"].forEach(function (ev) { dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.add("over"); }); });
+    ["dragleave", "drop"].forEach(function (ev) { dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.remove("over"); }); });
+    dz.addEventListener("drop", function (e) { if (e.dataTransfer && e.dataTransfer.files.length) { input.files = e.dataTransfer.files; handle(); } });
+    input.addEventListener("change", handle);
+    function handle() {
+      var file = input.files && input.files[0]; if (!file) return;
+      var r = new FileReader();
+      r.onload = function () {
+        var j = null; try { j = JSON.parse(r.result); } catch (e) {}
+        if (!j || j.type !== "service_account" || !j.client_email) {
+          dz.classList.add("bad"); dz.classList.remove("good");
+          title.textContent = "That's not the right file";
+          sub.textContent = "Use the JSON key from Google Cloud → Service account → Keys → Add key → JSON.";
+          toast("err", "That file isn't a Google service-account key."); input.value = ""; return;
+        }
+        dz.classList.remove("bad"); dz.classList.add("good");
+        title.textContent = "✓ " + file.name; sub.textContent = "Service account: " + j.client_email + " · uploading…";
+        setTimeout(function () { if (form.requestSubmit) form.requestSubmit(); else form.submit(); }, 350);
+      };
+      r.readAsText(file);
+    }
+  });
+
+  // Widget: colour swatches + live preview.
+  var prev = doc.querySelector("[data-widget-preview]");
+  if (prev) {
+    var colorIn = doc.querySelector("input[type=color][name=color]"), gIn = doc.querySelector("[data-preview-greeting]"), gOut = prev.querySelector("[data-greeting-out]");
+    var gDefault = gOut.textContent;
+    function paint(c) {
+      prev.style.setProperty("--accent", c); colorIn.value = c;
+      doc.querySelectorAll("[data-color]").forEach(function (s) { s.classList.toggle("on", s.getAttribute("data-color").toLowerCase() === c.toLowerCase()); });
+      colorIn.closest(".swatch").classList.toggle("on", !doc.querySelector("[data-color].on"));
+    }
+    doc.querySelectorAll("[data-color]").forEach(function (s) { s.addEventListener("click", function () { paint(s.getAttribute("data-color")); }); });
+    colorIn.addEventListener("input", function () { paint(colorIn.value); });
+    gIn.addEventListener("input", function () { gOut.textContent = gIn.value.trim() || gDefault; });
+    paint(colorIn.value);
+  }
+
   // ---------------------------------------------------------------- test chat
+  // ---------------------------------------------------------------- admin helpers (v6)
+  // Show / hide a panel: <button data-open="id"> and <button data-close="id">.
+  doc.addEventListener("click", function (e) {
+    var o = e.target.closest("[data-open]"), c = e.target.closest("[data-close]");
+    if (o) {
+      var p = doc.getElementById(o.getAttribute("data-open")); if (!p) return;
+      p.hidden = false; p.classList.remove("reveal-in"); void p.offsetWidth; p.classList.add("reveal-in");
+      p.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+      var f = p.querySelector("input:not([type=hidden]):not([type=file]),select,textarea"); if (f) setTimeout(function () { f.focus({ preventScroll: true }); }, 350);
+    }
+    if (c) { var q = doc.getElementById(c.getAttribute("data-close")); if (q) q.hidden = true; }
+  });
+  // Deep link like /admin/users/5#payments from "Record payment" opens the form straight away.
+  if (location.hash === "#payments" && doc.getElementById("record-payment")) {
+    var rp = doc.querySelector('[data-open="record-payment"]');
+    if (rp && !doc.querySelector('[data-toast="ok"],[data-toast="err"]')) setTimeout(function () { rp.click(); }, 300);
+  }
+
+  // Quick date chips: add a period to the date field next to them.
+  function addPeriod(iso, code) {
+    var d = iso ? new Date(iso + "T00:00:00") : new Date();
+    if (isNaN(d)) d = new Date();
+    var n = parseInt(code.slice(1), 10), unit = code.slice(-1);
+    if (unit === "d") d.setDate(d.getDate() + n);
+    if (unit === "m") d.setMonth(d.getMonth() + n);
+    if (unit === "y") d.setFullYear(d.getFullYear() + n);
+    var z = function (x) { return (x < 10 ? "0" : "") + x; };
+    return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate());
+  }
+  doc.querySelectorAll("[data-quick-dates]").forEach(function (box) {
+    var input = box.parentNode.querySelector("input[type=date]") || (box.closest(".grid") && box.closest(".grid").querySelector("input[type=date]"));
+    if (!input) return;
+    box.addEventListener("click", function (e) {
+      var b = e.target.closest("[data-add]"); if (!b) return;
+      var t = addPeriod("", "+0d");
+      var base = box.getAttribute("data-base") || (input.value && input.value >= t ? input.value : t);
+      input.value = addPeriod(base, b.getAttribute("data-add"));
+      input.classList.remove("flash-fill"); void input.offsetWidth; input.classList.add("flash-fill");
+      box.querySelectorAll(".chip").forEach(function (x) { x.classList.toggle("on", x === b); });
+    });
+  });
+
+  // Account form: customer-only sections follow the role; the "new key" fields follow the key picker.
+  doc.querySelectorAll("[data-role-form]").forEach(function (form) {
+    var role = form.querySelector("[data-role-select]"), keySel = form.querySelector("[data-shared-key]"), nk = form.querySelector("[data-new-key]");
+    function sync() {
+      var customer = !role || role.value !== "admin";
+      form.querySelectorAll("[data-customer-only]").forEach(function (el) { el.hidden = !customer; });
+      if (nk && keySel) {
+        var isNew = keySel.value === "new"; nk.hidden = !isNew;
+        nk.querySelectorAll("input").forEach(function (i) { i.required = isNew && customer; });
+      }
+    }
+    if (role) role.addEventListener("change", sync);
+    if (keySel) keySel.addEventListener("change", function () { sync(); if (keySel.value === "new") { var i = nk.querySelector("input"); if (i) i.focus(); } });
+    sync();
+  });
+
+  // Payment form: the extend fields follow the switch.
+  doc.querySelectorAll("[data-extend-toggle]").forEach(function (t) {
+    var f = t.closest("form").querySelector("[data-extend-fields]");
+    function s() { if (f) { f.classList.toggle("dim", !t.checked); f.querySelectorAll("input,button").forEach(function (i) { i.disabled = !t.checked; }); } }
+    t.addEventListener("change", s); s();
+  });
+
+  // Screenshot drop: preview, shrink big images in the browser (keeps the database small), paste with ⌘V.
+  doc.querySelectorAll("[data-imagedrop]").forEach(function (dz) {
+    var input = dz.querySelector("input[type=file]"), img = dz.querySelector("[data-img-preview]");
+    var title = dz.querySelector("[data-dz-title]"), sub = dz.querySelector("[data-dz-sub]");
+    ["dragenter", "dragover"].forEach(function (ev) { dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.add("over"); }); });
+    ["dragleave", "drop"].forEach(function (ev) { dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.remove("over"); }); });
+    dz.addEventListener("drop", function (e) { if (e.dataTransfer && e.dataTransfer.files.length) use(e.dataTransfer.files[0]); });
+    input.addEventListener("change", function () { if (input.files[0]) use(input.files[0]); });
+    doc.addEventListener("paste", function (e) {
+      if (dz.closest("[hidden]")) return;
+      var items = (e.clipboardData && e.clipboardData.files) || [];
+      for (var i = 0; i < items.length; i++) if (/^image\//.test(items[i].type)) { use(items[i]); e.preventDefault(); return; }
+    });
+    function setFile(file) {
+      try { var dt = new DataTransfer(); dt.items.add(file); input.files = dt.files; } catch (e) {}
+    }
+    function show(file, note) {
+      var url = URL.createObjectURL(file); img.src = url; img.hidden = false;
+      dz.classList.add("good", "has-img"); dz.classList.remove("bad");
+      title.textContent = "✓ Screenshot added"; sub.textContent = note;
+    }
+    function use(file) {
+      if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
+        dz.classList.add("bad"); title.textContent = "Use a PNG or JPG image"; toast("err", "That file isn't a PNG or JPG image."); input.value = ""; return;
+      }
+      var kb = function (n) { return n < 1024 ? "under 1 KB" : Math.round(n / 1024) + " KB"; };
+      var im = new Image();
+      im.onload = function () {
+        var max = 1600, s = Math.min(1, max / Math.max(im.width, im.height));
+        if (s === 1 && file.size < 700 * 1024) { setFile(file); show(file, kb(file.size) + " · click to change"); return; }
+        var c = doc.createElement("canvas"); c.width = Math.round(im.width * s); c.height = Math.round(im.height * s);
+        c.getContext("2d").drawImage(im, 0, 0, c.width, c.height);
+        c.toBlob(function (blob) {
+          if (!blob) { setFile(file); show(file, kb(file.size)); return; }
+          var f = new File([blob], (file.name || "screenshot").replace(/\.\w+$/, "") + ".jpg", { type: "image/jpeg" });
+          setFile(f); show(f, kb(f.size) + " (shrunk from " + kb(file.size) + ") · click to change");
+        }, "image/jpeg", 0.82);
+      };
+      im.onerror = function () { setFile(file); show(file, kb(file.size)); };
+      im.src = URL.createObjectURL(file);
+    }
+  });
+
+  // Screenshot viewer.
+  doc.addEventListener("click", function (e) {
+    var a = e.target.closest("a[data-lightbox]"); if (!a) return;
+    e.preventDefault();
+    var box = doc.createElement("div"); box.className = "lightbox";
+    var im = doc.createElement("img"); im.src = a.getAttribute("href"); im.alt = "Payment screenshot";
+    var x = doc.createElement("button"); x.type = "button"; x.className = "lb-close"; x.setAttribute("aria-label", "Close"); x.textContent = "×";
+    box.appendChild(im); box.appendChild(x); doc.body.appendChild(box);
+    function close() { box.classList.add("out"); doc.removeEventListener("keydown", k); setTimeout(function () { box.remove(); }, 220); }
+    function k(ev) { if (ev.key === "Escape") close(); }
+    box.addEventListener("click", function (ev) { if (ev.target !== im) close(); });
+    doc.addEventListener("keydown", k);
+  });
+
+  // Press "/" to jump to search.
+  doc.addEventListener("keydown", function (e) {
+    if (e.key !== "/" || e.metaKey || e.ctrlKey || /INPUT|TEXTAREA|SELECT/.test((doc.activeElement || {}).tagName || "")) return;
+    var s = doc.querySelector("[data-slash-focus]"); if (s) { e.preventDefault(); s.focus(); s.select(); }
+  });
+
+  // Expiry banner: "hide for now" is remembered on this device until the next day's banner.
+  doc.querySelectorAll("[data-dismiss-key]").forEach(function (b) {
+    var k = "dismiss:" + b.getAttribute("data-dismiss-key");
+    if (store(k)) { b.remove(); return; }
+    var x = b.querySelector("[data-dismiss]");
+    if (x) x.addEventListener("click", function () { store(k, "1"); b.classList.add("out"); setTimeout(function () { b.remove(); }, 260); });
+  });
+
   var chat = doc.getElementById("chat");
   if (!chat) return;
   var msgs = chat.querySelector(".msgs"), form = chat.querySelector("form"), input = form.querySelector("input"), sendBtn = form.querySelector("button");
@@ -236,7 +530,13 @@
     var t = typing();
     fetch(chat.getAttribute("data-endpoint"), { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf }, body: JSON.stringify({ text: text }) })
       .then(function (r) { return r.json(); })
-      .then(function (j) { t.remove(); add("b", j.reply || j.error || "No reply"); if (j.error) toast("err", j.error); })
+      .then(function (j) {
+        t.remove(); add("b", j.reply || j.error || "No reply"); if (j.error) toast("err", j.error);
+        if (j.firstBooking) {
+          setTimeout(function () { confetti(); toast("ok", "Your first booking works! Check your Google Calendar.", 6000); }, 300);
+          var cont = doc.querySelector('form[action="/setup/test/done"] button:not([type=button])'); if (cont) cont.classList.add("pulse");
+        } else if (j.booked) { toast("ok", "Booked. It's in your calendar."); }
+      })
       .catch(function () { t.remove(); add("b", "Network error. Try again."); toast("err", "Network error. Check your connection."); })
       .finally(function () { waiting = false; sendBtn.classList.remove("loading"); input.focus(); });
   }
