@@ -6,6 +6,7 @@ import { markRead, sendText } from "../kapso.js";
 import { accessProblem, getWorkspaceByPublicId } from "../models.js";
 import { decrypt, hmacHex, rateLimited, safeEqual } from "../security.js";
 import { html, raw } from "../views/html.js";
+import { ICON_LINKS } from "../views/layout.js";
 
 export const publicRoutes = Router();
 
@@ -35,6 +36,7 @@ publicRoutes.get("/w/:id", async (req, res) => {
     html`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Book · ${ws.business_name}</title>
+${ICON_LINKS}
 <link rel="stylesheet" href="/static/widget.css?v=3">
 <style>:root{--accent:${/^#[0-9a-fA-F]{6}$/.test(ws.widget_color) ? ws.widget_color : "#16a34a"}}</style>
 </head><body>

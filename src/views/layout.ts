@@ -20,7 +20,8 @@ export function page(
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="${theme === "light" ? "#f5f5f7" : "#000000"}">
 <title>${opts.title} · ${env.appName}</title>
-<link rel="stylesheet" href="/static/app.css?v=9">
+${ICON_LINKS}
+<link rel="stylesheet" href="/static/app.css?v=10">
 <script>document.documentElement.classList.add("js")</script>
 </head>
 <body class="${u ? "app" : "auth"}">
@@ -66,6 +67,13 @@ function expiryBanner(u: NonNullable<Request["user"]>) {
     <button type="button" class="icon-btn" data-dismiss aria-label="Hide for now"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
   </div>`;
 }
+
+/** Browser-tab icon, home-screen icon and install manifest. */
+export const ICON_LINKS = raw(`<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="icon" href="/static/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="manifest" href="/static/manifest.webmanifest">`);
 
 export type Theme = "dark" | "light" | "system";
 export function themeOf(req: Request): Theme {

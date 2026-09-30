@@ -30,6 +30,9 @@ app.get("/healthz", async (_req, res) => {
   }
 });
 app.use("/static", express.static(path.resolve("public"), { maxAge: "1h" }));
+// Browsers ask for these at the site root.
+app.get("/favicon.ico", (_req, res) => res.sendFile(path.resolve("public/favicon.ico"), { maxAge: "7d" }));
+app.get("/apple-touch-icon.png", (_req, res) => res.sendFile(path.resolve("public/apple-touch-icon.png"), { maxAge: "7d" }));
 
 // Public endpoints (widget + WhatsApp webhook) use their own body parsers, so mount them first.
 app.use(publicRoutes);

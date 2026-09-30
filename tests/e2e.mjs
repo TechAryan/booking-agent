@@ -320,6 +320,11 @@ await admin.post(`/admin/users/${raviId}`, { name: "Ravi Salon", email: "ravi@sa
 r = await ravi.page("/");
 ok(!r.text.includes("Your access ends"), "no banner 10 days before");
 
+// Tab icon
+r = await anon.req("/favicon.ico"); ok(r.status === 200, "favicon.ico served");
+r = await anon.req("/static/icon.svg"); ok(r.status === 200 && r.text.includes("<svg"), "svg icon served");
+r = await anon.req("/login"); ok(r.text.includes('rel="icon"') && r.text.includes("apple-touch-icon") && r.text.includes("manifest.webmanifest"), "pages link the tab icon + manifest");
+
 // non-admin can't reach admin
 r = await anon.req("/admin");
 ok(r.status === 302, "anon can't open admin");
