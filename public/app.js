@@ -258,12 +258,19 @@
       f.querySelector("[name=close_hour]").value = String(t.close);
       f.querySelector("[name=slot_minutes]").value = String(t.slot);
       f.querySelectorAll("[name=days]").forEach(function (c) { c.checked = t.days.indexOf(parseInt(c.value, 10)) >= 0; });
-      var extra = f.querySelector("[name=extra_info]");
-      if (extra && t.extra && !extra.value.trim()) extra.value = t.extra;
-      doc.querySelectorAll("[data-template],[data-template-other]").forEach(function (x) { x.classList.toggle("picked", x === b); });
+      // Extra info follows the chosen type, unless the person has typed their own text there.
+      var extra = f.querySelector("[name=extra_info]"), keptExtra = false;
+      if (extra) {
+        var cur = extra.value.trim(), prev = extra.getAttribute("data-tpl-fill");
+        var untouched = !cur || (prev !== null && cur === prev.trim());
+        if (untouched) { extra.value = t.extra || ""; extra.setAttribute("data-tpl-fill", t.extra || ""); }
+        else keptExtra = !!t.extra;
+      }
+      doc.querySelectorAll("[data-template]").forEach(function (x) { x.classList.toggle("picked", x === b); });
       f.querySelectorAll("input,select").forEach(function (el) { el.classList.add("flash-fill"); setTimeout(function () { el.classList.remove("flash-fill"); }, 900); });
       updateSlots();
       toast("ok", t.label + " template applied. Add your business name and adjust anything.");
+      if (keptExtra) toast("info", "We kept what you wrote in Extra information. Clear it if you want the " + t.label + " suggestion.", 6000);
       if (name && !name.value) setTimeout(function () { name.focus(); }, 300);
     });
   });
@@ -299,16 +306,13 @@
         if (e.key === "Enter") { e.preventDefault(); var first = cards.filter(function (c) { return !c.hidden; })[0]; if (first) first.click(); }
       });
     }
-    var other = tplBox.querySelector("[data-template-other]");
-    if (other) other.addEventListener("click", function () {
-      var f = doc.querySelector('form[action="/setup/business"]'); if (!f) return;
-      doc.querySelectorAll("[data-template],[data-template-other]").forEach(function (x) { x.classList.toggle("picked", x === other); });
-      var sv = f.querySelector("[name=services]"), nm = f.querySelector("[name=business_name]");
-      sv.value = ""; sv.placeholder = "e.g. Consultation call, Site visit, Order pickup";
-      var target = nm && !nm.value ? nm : sv;
-      target.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
-      setTimeout(function () { target.focus(); target.classList.add("flash-fill"); setTimeout(function () { target.classList.remove("flash-fill"); }, 900); }, 350);
-      toast("info", "Type what customers can book with you, separated by commas. Set your hours below.", 5000);
+    // "Skip this": jump to the form and start typing.
+    var skip = doc.querySelector("[data-skip-templates]");
+    if (skip) skip.addEventListener("click", function (e) {
+      e.preventDefault();
+      var nm = doc.querySelector('form[action="/setup/business"] [name=business_name]'); if (!nm) return;
+      nm.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
+      setTimeout(function () { nm.focus(); nm.classList.add("flash-fill"); setTimeout(function () { nm.classList.remove("flash-fill"); }, 900); }, 350);
     });
   }
 

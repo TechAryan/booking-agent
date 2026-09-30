@@ -20,7 +20,7 @@ export function page(
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="${theme === "light" ? "#f5f5f7" : "#000000"}">
 <title>${opts.title} · ${env.appName}</title>
-<link rel="stylesheet" href="/static/app.css?v=8">
+<link rel="stylesheet" href="/static/app.css?v=9">
 <script>document.documentElement.classList.add("js")</script>
 </head>
 <body class="${u ? "app" : "auth"}">
@@ -49,7 +49,7 @@ ${u ? "" : html`<div class="mesh" aria-hidden="true"><i></i><i></i><i></i></div>
   ${opts.body}
 </main>
 <div class="toasts" id="toasts" aria-live="polite"></div>
-<script src="/static/app.js?v=8"></script>
+<script src="/static/app.js?v=10"></script>
 </body>
 </html>`.toString();
 }

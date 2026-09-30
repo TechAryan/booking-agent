@@ -176,7 +176,7 @@ setupRoutes.get("/setup/business", requireLogin, async (req, res) => {
         <p class="sub">The assistant uses these to answer customers and to decide which slots are free.</p>
         ${quickStart(!!w.business_done)}
         <div class="card">
-          <form method="post" action="/setup/business" data-busy="Saving…">
+          <form method="post" action="/setup/business" data-busy="Saving…" id="business-form">
             ${csrfField(req)}
             <label>Business name</label>
             <input type="text" name="business_name" value="${w.business_name}" placeholder="Smile Dental Clinic" required maxlength="100">
@@ -192,7 +192,7 @@ setupRoutes.get("/setup/business", requireLogin, async (req, res) => {
             </div>
             <div class="slot-preview" data-slot-preview aria-live="polite"></div>
             <label>Extra information for the assistant <span class="hint">address, parking, prices it may share, what it must never do, languages</span></label>
-            <textarea name="extra_info" maxlength="3000" placeholder="We're at 12 MG Road, 2nd floor. Parking in the basement.&#10;Don't give medical advice.&#10;Reply in Hindi if the customer writes in Hindi.">${w.extra_info}</textarea>
+            <textarea name="extra_info" ${TEMPLATES.some((t) => t.extra && t.extra.trim() === w.extra_info.trim()) ? html`data-tpl-fill="${w.extra_info}"` : ""} maxlength="3000" placeholder="We're at 12 MG Road, 2nd floor. Parking in the basement.&#10;Don't give medical advice.&#10;Reply in Hindi if the customer writes in Hindi.">${w.extra_info}</textarea>
             <div class="row"><button>Save and continue</button></div>
           </form>
         </div>`,
@@ -667,14 +667,13 @@ function quickStart(done: boolean) {
         const data = { label: t.label, services: t.services, open: t.open, close: t.close, slot: t.slot, days: t.days, extra: t.extra ?? "" };
         return html`<button type="button" class="template" data-template="${JSON.stringify(data)}" data-cat="${t.cat}${t.popular ? " popular" : ""}" data-search="${`${t.label} ${t.tags ?? ""} ${t.services}`.toLowerCase()}" ${t.popular ? "" : html`hidden`}><span class="emoji" aria-hidden="true">${t.emoji}</span><b>${t.label}</b><small>${t.slot} min · ${daysHint(t.days)}</small></button>`;
       })}
-      <button type="button" class="template other" data-template-other><span class="emoji" aria-hidden="true">✏️</span><b>Something else</b><small>Start blank and describe it yourself</small></button>
     </div>
-    <p class="qs-empty muted" data-templates-empty hidden>No match. Pick <b>Something else</b> and type your own services. It works for any business that takes bookings.</p>`;
+    <p class="qs-empty muted" data-templates-empty hidden>No match, and that's fine. Just fill in the form below yourself. It works for any business that takes bookings.</p>`;
   return done
     ? html`<details class="card qs-again"><summary><h2>Start from a business type</h2><span class="hint">Replaces services and hours below</span></summary>${body}</details>`
     : html`<div class="card">
-        <h2>What kind of business is it?</h2>
-        <p class="muted" style="margin-top:-4px">Pick the closest match to fill in typical services and hours. You can change everything after. Nothing close? Choose <b>Something else</b>.</p>
+        <div class="qs-head"><h2>What kind of business is it?</h2><span class="tag">Optional</span></div>
+        <p class="muted" style="margin-top:-4px">A shortcut: picking one fills in typical services and hours for you, and you can change everything after. Don't see yours? Skip this and <a href="#business-form" data-skip-templates>fill in the form below</a> yourself.</p>
         ${body}
       </div>`;
 }

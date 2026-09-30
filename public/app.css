@@ -755,9 +755,6 @@ details.advanced input, details.advanced select { background: var(--card); }
 .qs-cats .chip { flex: 0 0 auto; }
 .templates { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
 .template.in { animation: rise .35s var(--ease) both; }
-.template.other { border: 1.5px dashed var(--sep); background: transparent; }
-.template.other:hover { border-color: var(--accent); background: var(--accent-soft); }
-.template.other.picked { border-style: solid; }
 .qs-empty { margin: 12px 0 0; }
 details.qs-again summary { list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 details.qs-again summary::-webkit-details-marker { display: none; }
@@ -766,3 +763,4 @@ details.qs-again summary::after { content: "Show"; margin-left: auto; color: var
 details.qs-again[open] summary::after { content: "Hide"; }
 details.qs-again[open] .qs-tools { animation: rise .35s var(--ease); }
 @media (max-width: 640px) { .templates { grid-template-columns: 1fr 1fr; } }
+.qs-head { display: flex; align-items: center; gap: 8px; } .qs-head h2 { margin: 0 0 8px; } .qs-head .tag { margin: 0 0 8px; }
