@@ -6,7 +6,8 @@ import { checkCsrf, endAllSessions, requireAdmin, requireLogin } from "../auth.j
 import { accessProblem, countActiveAdmins, createUser, deleteUser, getUser, getUserByEmail, getWorkspaceForUser, listUsers, recentActivity, setPassword } from "../models.js";
 import { decrypt, tempPassword } from "../security.js";
 import { deleteWebhook } from "../kapso.js";
-import { html } from "../views/html.js";
+import { html, raw } from "../views/html.js";
+import { icon, tile } from "../views/icons.js";
 import { csrfField, page, withMsg } from "../views/layout.js";
 
 export const adminRoutes = Router();
@@ -14,9 +15,17 @@ adminRoutes.use("/admin", requireLogin, requireAdmin, checkCsrf);
 
 function statusPill(u: User) {
   const p = accessProblem(u);
-  if (!p) return html`<span class="pill ok">Active</span>`;
-  if (u.status !== "active") return html`<span class="pill bad">Inactive</span>`;
-  return html`<span class="pill bad">Expired</span>`;
+  if (!p) return html`<span class="pill ok"><i class="sdot"></i>Active</span>`;
+  if (u.status !== "active") return html`<span class="pill"><i class="sdot"></i>Inactive</span>`;
+  return html`<span class="pill bad"><i class="sdot"></i>Expired</span>`;
+}
+
+function avatar(name: string, email: string) {
+  const label = (name || email).trim();
+  const initials = label.split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("") || "?";
+  let h = 0;
+  for (const ch of email) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return html`<span class="avatar" style="--h:${h}">${initials}</span>`;
 }
 
 adminRoutes.get("/admin", async (req, res) => {
@@ -24,37 +33,48 @@ adminRoutes.get("/admin", async (req, res) => {
   const q = String(req.query.q || "").toLowerCase();
   const shown = q ? users.filter((u) => `${u.email} ${u.name} ${u.business_name ?? ""}`.toLowerCase().includes(q)) : users;
   const soon = DateTime.now().plus({ days: 7 }).toISODate()!;
+  const customers = users.filter((u) => u.role === "user");
+  const activeN = customers.filter((u) => !accessProblem(u)).length;
+  const soonN = customers.filter((u) => !accessProblem(u) && u.valid_until && u.valid_until <= soon).length;
+  const offN = customers.length - activeN;
+  const liveN = customers.filter((u) => u.setup.startsWith("Live")).length;
   res.send(
     page(req, {
       title: "Admin",
       wide: true,
       body: html`
-        <div class="row" style="justify-content:space-between;margin-top:0">
-          <div><h1>Accounts</h1><p class="sub">${users.length} accounts · admins and customers</p></div>
-          <a class="btn" href="/admin/users/new">+ New account</a>
+        <div class="page-head spread">
+          <div><p class="eyebrow">Admin</p><h1>Accounts</h1></div>
+          <a class="btn" href="/admin/users/new">${raw('<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>')} New account</a>
         </div>
-        <form method="get" action="/admin" class="row" style="margin:0 0 12px">
-          <input type="text" name="q" value="${q}" placeholder="Search email, name or business" style="max-width:340px">
-          <button class="secondary">Search</button>
+        <div class="stats four">
+          <div class="stat card"><span class="tile sm" style="--tile:#007aff">${icon("users", 17)}</span><b data-count="${customers.length}">${customers.length}</b><span>Customers</span></div>
+          <div class="stat card"><span class="tile sm" style="--tile:#34c759">${icon("check", 17)}</span><b data-count="${activeN}">${activeN}</b><span>Active</span></div>
+          <div class="stat card"><span class="tile sm" style="--tile:#af52de">${icon("bolt", 17)}</span><b data-count="${liveN}">${liveN}</b><span>Live</span></div>
+          <div class="stat card"><span class="tile sm" style="--tile:${soonN ? "#ff9500" : "#8e8e93"}">${icon("clock", 17)}</span><b data-count="${soonN}">${soonN}</b><span>Ending in 7 days${offN ? ` · ${offN} off` : ""}</span></div>
+        </div>
+        <form method="get" action="/admin" class="search" data-silent>
+          ${raw('<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>')}
+          <input type="search" name="q" value="${q}" placeholder="Search name, email or business" aria-label="Search accounts">
         </form>
-        <div class="card table-scroll" style="padding:0">
-          <table>
-            <thead><tr><th>Account</th><th>Role</th><th>Status</th><th>Valid until</th><th>Access</th><th>Setup</th><th>Last login</th><th></th></tr></thead>
+        <div class="card list table-scroll">
+          <table class="accounts">
+            <thead><tr><th>Account</th><th>Status</th><th>Valid until</th><th>Channels</th><th>Setup</th><th>Last login</th><th></th></tr></thead>
             <tbody>
               ${shown.map(
-                (u) => html`<tr>
-                  <td><b>${u.name || "—"}</b><br><span class="muted">${u.email}</span>${u.business_name ? html`<br><span class="hint">${u.business_name}</span>` : ""}</td>
-                  <td>${u.role === "admin" ? html`<span class="pill">Admin</span>` : "Customer"}</td>
+                (u) => html`<tr data-href="/admin/users/${u.id}">
+                  <td><div class="who">${avatar(u.name, u.email)}<div><b>${u.name || "—"}</b>${u.role === "admin" ? html` <span class="tag">Admin</span>` : ""}<small>${u.email}${u.business_name ? ` · ${u.business_name}` : ""}</small></div></div></td>
                   <td>${statusPill(u)}</td>
-                  <td>${u.valid_until ?? "No expiry"}${u.valid_until && u.valid_until <= soon && !accessProblem(u) ? html`<br><span class="hint">ends soon</span>` : ""}</td>
-                  <td>${[u.perm_widget ? "Widget" : "", u.perm_whatsapp ? "WhatsApp" : ""].filter(Boolean).join(", ") || "—"}</td>
-                  <td>${u.setup}</td>
-                  <td>${u.last_login_at ? u.last_login_at.slice(0, 16) : "Never"}</td>
-                  <td><a href="/admin/users/${u.id}">Edit</a></td>
+                  <td>${u.valid_until ?? html`<span class="muted">No expiry</span>`}${u.valid_until && u.valid_until <= soon && !accessProblem(u) ? html`<br><span class="tag warn">Ends soon</span>` : ""}</td>
+                  <td>${[u.perm_widget ? "Widget" : "", u.perm_whatsapp ? "WhatsApp" : ""].filter(Boolean).join(" · ") || "—"}</td>
+                  <td>${u.setup.startsWith("Live") ? html`<span class="pill ok">${u.setup}</span>` : html`<span class="muted">${u.setup}</span>`}</td>
+                  <td class="muted">${u.last_login_at ? u.last_login_at.slice(0, 16) : "Never"}</td>
+                  <td class="end"><a href="/admin/users/${u.id}" class="chev" aria-label="Edit ${u.email}">${icon("chevron", 16)}</a></td>
                 </tr>`
               )}
             </tbody>
           </table>
+          ${shown.length ? "" : html`<div class="empty">${tile("users", "lg")}<b>No matches</b><span>Try a different name or email.</span></div>`}
         </div>`,
     })
   );
@@ -171,9 +191,8 @@ adminRoutes.get("/admin/users/:id", async (req, res) => {
     page(req, {
       title: u.email,
       body: html`
-        <p><a href="/admin">← All accounts</a></p>
-        <h1>${u.name || u.email}</h1>
-        <p class="sub">${u.email} · created ${u.created_at.slice(0, 10)} · ${statusPill(u)}</p>
+        <nav class="stepper"><a class="back" href="/admin">${raw('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>')} All accounts</a></nav>
+        <div class="page-head">${avatar(u.name, u.email)}<div><p class="eyebrow">${u.role === "admin" ? "Admin" : "Customer"} · since ${u.created_at.slice(0, 10)}</p><h1>${u.name || u.email}</h1><p class="sub tight">${u.email} · ${statusPill(u)}</p></div></div>
         <div class="card"><h2>Account</h2>${userForm(req, u)}</div>
         <div class="card">
           <h2>Password</h2>

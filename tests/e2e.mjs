@@ -110,7 +110,7 @@ ok(JSON.parse(r.text).reply.includes('"ok":true'), "test chat books a slot", r.t
 r = await cu.req("/setup/test/message", { method: "POST", json: { text: "what bookings do I have" }, headers: { "x-csrf-token": cu.csrf } });
 ok(JSON.parse(r.text).reply.includes("Priya"), "lists booking by phone", r.text);
 r = await cu.page("/");
-ok(/dot done[^]*Test your assistant/.test(r.text), "test step auto-marked done after booking");
+ok(/Test your assistant<\/b>(?:(?!<li)[^])*state done/.test(r.text), "test step auto-marked done after booking");
 
 // Widget
 r = await cu.req("/w/nothing");

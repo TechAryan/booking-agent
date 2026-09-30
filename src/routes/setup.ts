@@ -9,7 +9,8 @@ import { env } from "../env.js";
 import { createWebhook, deleteWebhook, verifyKapso } from "../kapso.js";
 import { getWorkspaceForUser, recentActivity, updateWorkspace } from "../models.js";
 import { decrypt, encrypt, mask, randomToken, rateLimited } from "../security.js";
-import { html, Safe } from "../views/html.js";
+import { html, raw, Safe } from "../views/html.js";
+import { icon, tile } from "../views/icons.js";
 import { csrfField, page, withMsg } from "../views/layout.js";
 
 export const setupRoutes = Router();
@@ -33,16 +34,22 @@ function isReady(w: Workspace) {
 
 function stepNav(active: string) {
   const items = [
-    ["business", "1. Business"],
-    ["claude", "2. Claude"],
-    ["google", "3. Calendar"],
-    ["test", "4. Test"],
+    ["business", "Business"],
+    ["claude", "Claude"],
+    ["google", "Calendar"],
+    ["test", "Test"],
     ["widget", "Widget"],
     ["whatsapp", "WhatsApp"],
   ];
-  return html`<nav class="step-nav" aria-label="Setup steps">${items.map(([k, l]) =>
-    k === active ? html`<b aria-current="step">${l}</b>` : html`<a href="/setup/${k}">${l}</a>`
-  )}</nav>`;
+  const idx = items.findIndex(([k]) => k === active);
+  return html`<nav class="stepper" aria-label="Setup steps">
+    <a class="back" href="/">${raw('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>')} Dashboard</a>
+    <div class="track">${items.map(([k, l], i) =>
+      k === active
+        ? html`<b aria-current="step" class="${i < idx ? "past" : ""}">${l}</b>`
+        : html`<a href="/setup/${k}" class="${i < idx ? "past" : ""}">${l}</a>`
+    )}</div>
+  </nav>`;
 }
 
 // ---------- Dashboard ----------
@@ -55,40 +62,91 @@ setupRoutes.get("/", requireLogin, async (req, res) => {
     { key: "claude", title: "Connect Claude", desc: "The AI that talks to your customers", done: !!w.claude_ok, show: true },
     { key: "google", title: "Connect Google Calendar", desc: "Where bookings are saved", done: !!w.google_ok, show: true },
     { key: "test", title: "Test your assistant", desc: "Chat with it and make a test booking", done: !!w.tested, show: true },
-    { key: "widget", title: "Website chat widget", desc: "Add a booking chat to your website", done: !!w.widget_enabled, show: !!u.perm_widget, optional: true },
-    { key: "whatsapp", title: "Connect WhatsApp", desc: "Customers book by messaging your number", done: !!w.whatsapp_enabled, show: !!u.perm_whatsapp, optional: true },
+    { key: "widget", title: "Website chat widget", desc: "A booking chat on your website", done: !!w.widget_enabled, show: !!u.perm_widget, optional: true },
+    { key: "whatsapp", title: "Connect WhatsApp", desc: "Customers book by messaging you", done: !!w.whatsapp_enabled, show: !!u.perm_whatsapp, optional: true },
   ];
-  const act = await recentActivity(w.id, 10);
-  const bookings = (await db.get("SELECT COUNT(*) c FROM activity WHERE workspace_id=? AND kind='booking' AND channel!='test'", w.id) as any).c;
+  const shown = steps.filter((s) => s.show);
+  const core = steps.filter((s) => !s.optional);
+  const coreDone = core.filter((s) => s.done).length;
+  const next = shown.find((s) => !s.done);
+  const live = [w.widget_enabled ? "Widget" : "", w.whatsapp_enabled ? "WhatsApp" : ""].filter(Boolean);
+  const act = await recentActivity(w.id, 8);
+  const weekBookings = Number((await db.get("SELECT COUNT(*) AS c FROM activity WHERE workspace_id=? AND kind='booking' AND channel!='test' AND created_at >= datetime('now','-7 days')", w.id))?.c ?? 0);
+  const allBookings = Number((await db.get("SELECT COUNT(*) AS c FROM activity WHERE workspace_id=? AND kind='booking' AND channel!='test'", w.id))?.c ?? 0);
+  const chats = Number((await db.get("SELECT COUNT(*) AS c FROM conversations WHERE workspace_id=? AND channel!='test'", w.id))?.c ?? 0);
+  const pct = Math.round((coreDone / core.length) * 100);
+  const R = 34, C = 2 * Math.PI * R;
+  const hour = DateTime.now().setZone(w.timezone || "Asia/Kolkata").hour;
+  const greet = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const kindIcon: Record<string, string> = { booking: "calendar", cancel: "calendar", error: "bolt", setup: "check", message: "test" };
   res.send(
     page(req, {
       title: "Dashboard",
       body: html`
-        <h1>${w.business_name || `Welcome, ${u.name || u.email}`}</h1>
-        <p class="sub">${w.widget_enabled || w.whatsapp_enabled ? `Your assistant is live · ${bookings} bookings so far` : "Finish these steps to put your booking assistant live."}</p>
-        ${u.role === "admin" && !w.business_done ? html`<div class="flash info">You're an admin. Manage accounts in <a href="/admin">Admin</a>, or set up a business here to try the product yourself.</div>` : ""}
-        <div class="card">
+        <p class="eyebrow">${greet}${firstName(u.name) ? `, ${firstName(u.name)}` : ""}</p>
+        <h1>${w.business_name || "Your booking assistant"}</h1>
+        ${u.role === "admin" && !w.business_done ? html`<div class="flash info" data-toast="info">You're an admin. Manage accounts in Admin, or set up a business here to try the product yourself.</div>` : ""}
+        <div class="card hero">
+          <div class="ring" style="--pct:${pct}">
+            <svg viewBox="0 0 80 80" aria-hidden="true"><circle class="track" cx="40" cy="40" r="${R}"/><circle class="bar" cx="40" cy="40" r="${R}" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${C.toFixed(1)}" data-offset="${(C * (1 - pct / 100)).toFixed(1)}"/></svg>
+            <b>${coreDone}<small>/${core.length}</small></b>
+          </div>
+          <div class="grow">
+            ${live.length
+              ? html`<h2><span class="live-dot"></span> Live on ${live.join(" & ")}</h2><p class="muted">Your assistant is answering customers right now.</p>`
+              : coreDone === core.length
+                ? html`<h2>Ready to go live</h2><p class="muted">Turn on the website widget or WhatsApp so customers can book.</p>`
+                : html`<h2>${coreDone === 0 ? "Let's set up your assistant" : "Nice progress"}</h2><p class="muted">${core.length - coreDone} of ${core.length} setup steps left. About ${Math.max(5, (core.length - coreDone) * 5)} minutes.</p>`}
+            ${next ? html`<a class="btn" href="/setup/${next.key}">${next.done ? "Edit" : "Continue"}: ${next.title} ${icon("chevron", 14)}</a>` : ""}
+          </div>
+        </div>
+        <div class="stats">
+          <div class="stat card"><span class="tile sm" style="--tile:#34c759">${icon("calendar", 17)}</span><b data-count="${weekBookings}">${weekBookings}</b><span>Bookings this week</span></div>
+          <div class="stat card"><span class="tile sm" style="--tile:#5856d6">${icon("test", 17)}</span><b data-count="${chats}">${chats}</b><span>Conversations</span></div>
+          <div class="stat card"><span class="tile sm" style="--tile:#ff9500">${icon("bolt", 17)}</span><b data-count="${allBookings}">${allBookings}</b><span>Total bookings</span></div>
+        </div>
+        <h3 class="section-title">Setup</h3>
+        <div class="card list">
           <ul class="steps">
-            ${steps
-              .filter((s) => s.show)
-              .map(
-                (s, i, all) => html`<li>
-                  <span class="dot ${s.done ? "done" : ""}">${s.done ? "✓" : s.optional ? "+" : i + 1}</span>
-                  <span class="grow"><b>${s.title}</b>${s.optional ? html` <span class="hint">optional</span>` : ""}<small>${s.desc}</small></span>
-                  <a class="btn ${s.key === all.find((x) => !x.done)?.key ? "" : "secondary"}" href="/setup/${s.key}">${s.done ? "Edit" : "Start"}</a>
-                </li>`
-              )}
+            ${shown.map(
+              (s) => html`<li>
+                <a class="row-link" href="/setup/${s.key}">
+                  ${tile(s.key === "google" ? "calendar" : s.key)}
+                  <span class="grow"><b>${s.title}</b>${s.optional ? html` <span class="tag">Optional</span>` : ""}<small>${s.desc}</small></span>
+                  ${s.done ? html`<span class="state done">${icon("check", 14)} Done</span>` : s.key === next?.key ? html`<span class="state next">Next</span>` : ""}
+                  <span class="chev">${icon("chevron", 16)}</span>
+                </a>
+              </li>`
+            )}
           </ul>
         </div>
-        <div class="card">
-          <h2>Recent activity</h2>
+        <h3 class="section-title">Recent activity</h3>
+        <div class="card list">
           ${act.length
-            ? html`<table><tbody>${act.map((a) => html`<tr><td class="hint">${a.created_at.slice(0, 16)}</td><td>${a.kind}</td><td>${a.channel}</td><td>${a.detail}</td></tr>`)}</tbody></table>`
-            : html`<p class="muted">Bookings and cancellations will show up here.</p>`}
+            ? html`<ul class="feed">${act.map(
+                (a) => html`<li>${tile(kindIcon[a.kind] ?? "inbox")}<span class="grow"><b>${a.kind === "booking" ? "New booking" : a.kind === "cancel" ? "Cancelled" : a.kind === "error" ? "Problem" : "Update"}</b><small>${a.detail}</small></span><span class="when" title="${a.created_at} UTC">${ago(a.created_at)}</span></li>`
+              )}</ul>`
+            : html`<div class="empty">${tile("inbox", "lg")}<b>No activity yet</b><span>Bookings and cancellations will appear here as they happen.</span></div>`}
         </div>`,
     })
   );
 });
+
+/** "Dr Priya Sharma" → "Priya"; "Aryan (Test Clinic)" → "Aryan". */
+function firstName(name: string): string {
+  const parts = (name || "").replace(/\(.*?\)/g, " ").trim().split(/\s+/).filter(Boolean);
+  const p = parts.find((w) => !/^(dr|mr|mrs|ms|miss|prof)\.?$/i.test(w));
+  return p ?? "";
+}
+
+function ago(sqliteUtc: string): string {
+  const t = DateTime.fromSQL(sqliteUtc, { zone: "utc" });
+  const mins = Math.max(0, Math.round(-t.diffNow("minutes").minutes));
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  if (mins < 1440) return `${Math.round(mins / 60)}h`;
+  return `${Math.round(mins / 1440)}d`;
+}
 
 // ---------- Step 1: Business ----------
 
@@ -101,7 +159,7 @@ setupRoutes.get("/setup/business", requireLogin, async (req, res) => {
     page(req, {
       title: "Business details",
       body: html`${stepNav("business")}
-        <h1>Business details</h1>
+        <div class="page-head">${tile("business", "lg")}<div><p class="eyebrow">Step 1 of 4</p><h1>Business details</h1></div></div>
         <p class="sub">The assistant uses these to answer customers and to decide which slots are free.</p>
         <div class="card">
           <form method="post" action="/setup/business" data-busy="Saving…">
@@ -162,7 +220,7 @@ setupRoutes.get("/setup/claude", requireLogin, async (req, res) => {
     page(req, {
       title: "Connect Claude",
       body: html`${stepNav("claude")}
-        <h1>Connect Claude</h1>
+        <div class="page-head">${tile("claude", "lg")}<div><p class="eyebrow">Step 2 of 4</p><h1>Connect Claude</h1></div></div>
         <p class="sub">Claude is the AI that chats with your customers. You pay Anthropic directly for what it uses, usually a few rupees per conversation.</p>
         <div class="card">
           <h2>Get your API key (5 minutes)</h2>
@@ -214,7 +272,7 @@ setupRoutes.get("/setup/google", requireLogin, async (req, res) => {
     page(req, {
       title: "Connect Google Calendar",
       body: html`${stepNav("google")}
-        <h1>Connect Google Calendar</h1>
+        <div class="page-head">${tile("calendar", "lg")}<div><p class="eyebrow">Step 3 of 4</p><h1>Connect Google Calendar</h1></div></div>
         <p class="sub">Bookings go into a Google Calendar you choose, and busy times there are never offered to customers. About 15 minutes, done once.</p>
         <div class="card">
           <h2>Part A: create a key in Google Cloud</h2>
@@ -309,7 +367,7 @@ setupRoutes.get("/setup/test", requireLogin, async (req, res) => {
     page(req, {
       title: "Test your assistant",
       body: html`${stepNav("test")}
-        <h1>Test your assistant</h1>
+        <div class="page-head">${tile("test", "lg")}<div><p class="eyebrow">Step 4 of 4</p><h1>Test your assistant</h1></div></div>
         <p class="sub">Chat as if you were a customer. Try these, then book a real test slot and check it appears in your calendar.</p>
         ${block ?? html`
           <div class="suggest">
@@ -375,7 +433,7 @@ setupRoutes.get("/setup/widget", requireLogin, async (req, res) => {
     page(req, {
       title: "Website widget",
       body: html`${stepNav("widget")}
-        <h1>Website chat widget</h1>
+        <div class="page-head">${tile("widget", "lg")}<div><p class="eyebrow">Channel · optional</p><h1>Website chat widget</h1></div></div>
         <p class="sub">Put the booking assistant on your own website. It uses the same calendar and settings.</p>
         ${block ?? html`
           <div class="card">
@@ -429,7 +487,7 @@ setupRoutes.get("/setup/whatsapp", requireLogin, async (req, res) => {
     page(req, {
       title: "Connect WhatsApp",
       body: html`${stepNav("whatsapp")}
-        <h1>Connect WhatsApp</h1>
+        <div class="page-head">${tile("whatsapp", "lg")}<div><p class="eyebrow">Channel · optional</p><h1>Connect WhatsApp</h1></div></div>
         <p class="sub">Customers message your WhatsApp number and the assistant books them in. We use Kapso, an official WhatsApp Business partner. About 15 minutes.</p>
         ${block ?? html`
           ${w.whatsapp_enabled

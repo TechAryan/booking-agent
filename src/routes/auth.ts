@@ -2,7 +2,7 @@ import { Router } from "express";
 import { checkCsrf, endAllSessions, endSession, requireLogin, startSession } from "../auth.js";
 import { accessProblem, getUserByEmail, setPassword } from "../models.js";
 import { passwordProblem, rateLimited, verifyPassword } from "../security.js";
-import { html } from "../views/html.js";
+import { html, raw } from "../views/html.js";
 import { csrfField, page, withMsg } from "../views/layout.js";
 
 export const authRoutes = Router();
@@ -15,17 +15,18 @@ authRoutes.get("/login", async (req, res) => {
       title: "Log in",
       body: html`
         <div class="card auth-card">
-          <h1>Log in</h1>
-          <p class="sub">Use the email and password your account manager sent you.</p>
-          <form method="post" action="/login">
+          <div class="app-icon" aria-hidden="true">${raw('<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/><path d="M8.5 15l2.2 2.2L15.5 13"/></svg>')}</div>
+          <h1>Welcome back</h1>
+          <p class="sub">Log in to manage your booking assistant.</p>
+          <form method="post" action="/login" data-busy="">
             <input type="hidden" name="next" value="${next}">
             <label for="email">Email</label>
-            <input id="email" type="email" name="email" required autocomplete="username" autofocus>
+            <input id="email" type="email" name="email" required autocomplete="username" autofocus placeholder="you@business.com">
             <label for="password">Password</label>
-            <input id="password" type="password" name="password" required autocomplete="current-password">
+            <input id="password" type="password" name="password" required autocomplete="current-password" placeholder="Your password">
             <div class="row"><button>Log in</button></div>
           </form>
-          <p class="hint" style="margin-top:16px">No account? Ask your account manager to create one for you.</p>
+          <p class="hint center">No account yet? Your account manager creates one for you.</p>
         </div>`,
     })
   );

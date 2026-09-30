@@ -26,7 +26,7 @@ const clearToasts = () => page.evaluate(() => document.querySelectorAll(".toast"
 async function clickAndSeeSpinner(selector, label) {
   await clearToasts();
   await page.evaluate(() => window.addEventListener("submit", (e) => { e.preventDefault(); window.__held = e.target; }, { once: true }));
-  await page.locator(`main ${selector}`).first().click();
+  await page.locator(`main ${selector}`).and(page.locator('button:not([type=button])')).first().click();
   const spinning = await page.evaluate(() => !!document.querySelector("button.loading") && document.getElementById("progress").classList.contains("on"));
   ok(spinning, `${label}: spinner + loading bar while working`);
   await Promise.all([page.waitForNavigation({ timeout: 15000 }), page.evaluate(() => HTMLFormElement.prototype.submit.call(window.__held))]);
@@ -36,6 +36,10 @@ async function clickAndSeeSpinner(selector, label) {
 await page.goto(`${BASE}/login`);
 await shot("01-login");
 await page.fill("#email", "admin@test.com"); await page.fill("#password", "AdminPass123");
+await page.click(".reveal button");
+ok((await page.getAttribute("#password", "type")) === "text", "eye button shows the password");
+await page.click(".reveal button");
+ok((await page.getAttribute("#password", "type")) === "password", "eye button hides it again");
 await clickAndSeeSpinner("form button", "Log in");
 ok(page.url().endsWith("/"), "admin logged in");
 
@@ -96,11 +100,14 @@ await Promise.all([page.waitForNavigation(), page.click("text=Log out")]);
 
 // ---------- Customer ----------
 await page.fill("#email", "priya@clinic.com"); await page.fill("#password", temp2);
-await Promise.all([page.waitForNavigation(), page.click("form button")]);
+await Promise.all([page.waitForNavigation(), page.click("main form button:not([type=button])")]);
 ok(page.url().includes("/account/password"), "customer must set own password");
 await page.fill("input[name=current]", temp2); await page.fill("input[name=password]", "Clinic2026!"); await page.fill("input[name=password2]", "Clinic2026!");
 await clickAndSeeSpinner("form button", "Save password");
 ok((await toastText()).includes("Password updated"), "password updated toast");
+await page.waitForTimeout(1600);
+ok(await page.evaluate(() => { const c = document.querySelector(".ring .bar"); return !!c && getComputedStyle(c).strokeDashoffset !== c.getAttribute("stroke-dashoffset") || c.getAttribute("data-offset") === c.getAttribute("stroke-dashoffset"); }), "dashboard progress ring animates to its value");
+ok((await page.$$(".steps .tile")).length >= 4, "setup rows have colored icon tiles");
 await shot("06-dashboard");
 
 await page.goto(`${BASE}/setup/business`);

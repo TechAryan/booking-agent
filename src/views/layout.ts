@@ -19,11 +19,12 @@ export function page(
 <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <title>${opts.title} · ${env.appName}</title>
-<link rel="stylesheet" href="/static/app.css?v=3">
+<link rel="stylesheet" href="/static/app.css?v=4">
 <script>document.documentElement.classList.add("js")</script>
 </head>
-<body>
+<body class="${u ? "app" : "auth"}">
 <div class="progress" id="progress" aria-hidden="true"></div>
+${u ? "" : html`<div class="mesh" aria-hidden="true"><i></i><i></i><i></i></div>`}
 <header class="topbar">
   <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>${env.appName}</a>
   ${u
@@ -43,7 +44,7 @@ export function page(
   ${opts.body}
 </main>
 <div class="toasts" id="toasts" aria-live="polite"></div>
-<script src="/static/app.js?v=3"></script>
+<script src="/static/app.js?v=4"></script>
 </body>
 </html>`.toString();
 }

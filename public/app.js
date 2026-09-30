@@ -158,6 +158,65 @@
     });
   });
 
+  // ---------------------------------------------------------------- dashboard polish
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // Progress ring fills in.
+  doc.querySelectorAll(".ring .bar[data-offset]").forEach(function (c) {
+    requestAnimationFrame(function () { requestAnimationFrame(function () { c.style.strokeDashoffset = c.getAttribute("data-offset"); }); });
+  });
+  // Numbers count up.
+  doc.querySelectorAll("[data-count]").forEach(function (el) {
+    var end = parseInt(el.getAttribute("data-count"), 10) || 0;
+    if (reduce || end === 0) return;
+    var start = null, dur = Math.min(1200, 400 + end * 40);
+    el.textContent = "0";
+    function step(ts) {
+      if (!start) start = ts;
+      var p = Math.min(1, (ts - start) / dur), e = 1 - Math.pow(1 - p, 3);
+      el.textContent = String(Math.round(end * e));
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  });
+  // Whole table row is clickable.
+  doc.addEventListener("click", function (e) {
+    var tr = e.target.closest("tr[data-href]");
+    if (!tr || e.target.closest("a,button,input")) return;
+    progressStart(); location.href = tr.getAttribute("data-href");
+  });
+  // Show / hide for password and API-key fields.
+  var EYE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  var EYE_OFF = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.6 10.6 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.1 3.9M6.6 6.6C3.9 8.3 2 12 2 12s3.5 7 10 7c1.6 0 3-.4 4.3-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+  doc.querySelectorAll('input[type="password"]').forEach(function (inp) {
+    var wrap = doc.createElement("div"); wrap.className = "reveal";
+    inp.parentNode.insertBefore(wrap, inp); wrap.appendChild(inp);
+    var b = doc.createElement("button"); b.type = "button"; b.innerHTML = EYE; b.setAttribute("aria-label", "Show"); b.title = "Show";
+    b.addEventListener("click", function () {
+      var show = inp.type === "password"; inp.type = show ? "text" : "password";
+      b.innerHTML = show ? EYE_OFF : EYE; b.setAttribute("aria-label", show ? "Hide" : "Show"); b.title = show ? "Hide" : "Show"; inp.focus();
+    });
+    wrap.appendChild(b);
+  });
+  // A little celebration when a channel goes live.
+  function confetti() {
+    if (reduce) return;
+    var box = doc.createElement("div"); box.className = "confetti";
+    var colors = ["#0a84ff", "#30d158", "#ff9f0a", "#ff375f", "#bf5af2", "#64d2ff"];
+    for (var i = 0; i < 70; i++) {
+      var c = doc.createElement("i");
+      c.style.left = Math.random() * 100 + "vw";
+      c.style.background = colors[i % colors.length];
+      c.style.setProperty("--x", (Math.random() * 30 - 15) + "vw");
+      c.style.setProperty("--r", (Math.random() * 900 - 450) + "deg");
+      c.style.setProperty("--d", (1.8 + Math.random() * 1.6) + "s");
+      c.style.animationDelay = Math.random() * 0.25 + "s";
+      box.appendChild(c);
+    }
+    doc.body.appendChild(box); setTimeout(function () { box.remove(); }, 4000);
+  }
+  window.appConfetti = confetti;
+  doc.querySelectorAll('[data-toast="ok"]').forEach(function (el) { if (/\bis live\b/i.test(el.textContent)) setTimeout(confetti, 250); });
+
   // ---------------------------------------------------------------- test chat
   var chat = doc.getElementById("chat");
   if (!chat) return;
