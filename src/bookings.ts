@@ -41,6 +41,21 @@ async function setBooking(id: number, fields: Partial<Booking>) {
 export function payToken(ws: Workspace, ref: string) {
   return hmacHex(env.appSecret, `pay:${ws.id}:${ref.toUpperCase()}`).slice(0, 20);
 }
+/** A short link the owner taps to send the booking details from their own WhatsApp (no 24-hour limit there). */
+export function forwardUrl(ws: Workspace, ref: string) {
+  return `${env.publicUrl}/f/${ws.public_id}/${ref}/${payToken(ws, ref)}`;
+}
+export function forwardText(ws: Workspace, b: Booking) {
+  const first = (b.customer_name || "").trim().split(/\s+/)[0] || "there";
+  const owes = b.status !== "cancelled" && b.pay_status !== "paid" && (b.pay_status === "awaiting" || b.pay_status === "pending_manual");
+  return [
+    `Hi ${first}, you're booked at ${ws.business_name}: ${b.service_name}, ${whenText(ws, b.start_at)}. Ref ${b.ref}.`,
+    owes ? `Please pay ${inr(b.amount)} here: ${b.pay_status === "awaiting" && b.pay_url ? b.pay_url : payPageUrl(ws, b.ref)}` : "",
+    b.mode === "online" && b.meet_link ? `Join online: ${b.meet_link}` : "",
+    b.mode !== "online" && ws.address ? `Address: ${ws.address}${mapsLink(ws) ? `\nMap: ${mapsLink(ws)}` : ""}` : "",
+  ].filter(Boolean).join("\n");
+}
+
 export function payPageUrl(ws: Workspace, ref: string) {
   return `${env.publicUrl}/pay/${ws.public_id}/${ref}/${payToken(ws, ref)}`;
 }

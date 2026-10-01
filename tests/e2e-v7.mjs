@@ -482,6 +482,7 @@ ok(tools8.includes("book_for_customer") && tools8.includes("attach_payment_proof
 const D9 = await openDay(9); av = D9.a;
 let ob = resultOf(await ownerSay(`!tool book_for_customer ${JSON.stringify({ customer_name: "Ravi Kumar", customer_phone: "98700 12345", service: "Skin check", start: `${ist(D9.d)}T${av.slots[0]}` })}`));
 ok(ob.ok && ob.status === "confirmed" && ob.customer_message?.includes("Ravi"), "owner books a free service for a caller", JSON.stringify(ob));
+ok(ob.whatsapp_sent === true && !ob.forward_link, "sent straight to the customer when WhatsApp allows it");
 ok(lastOut("919870012345").includes("you're booked at Glow Studio"), "customer gets the details on WhatsApp");
 ob = resultOf(await ownerSay(`!tool book_for_customer ${JSON.stringify({ customer_name: "Neha", customer_phone: "+91 98700 22222", service: "Facial", start: `${ist(D9.d)}T${av.slots[2]}`, payment: "link" })}`));
 ok(ob.ok && ob.status === "pending_manual" && ob.payUrl && ob.customer_message.includes(ob.payUrl), "owner: send a payment link (UPI page)", JSON.stringify(ob));
@@ -569,9 +570,13 @@ ok(r.text.includes("Send a payment link"), "walk-in form offers a payment link")
 const D11 = await openDay(D10.d + 1);
 const sl2 = JSON.parse((await cu.req(`/bookings/slots?date=${ist(D11.d)}&service=${facialId}`)).text);
 r = await cu.post("/bookings/new", { service_id: facialId, mode: "offline", date: ist(D11.d), time: sl2.slots[0], name: "Link Lee", phone: "98700 44444", paid: "link" });
-ok(dec(r.loc).includes("send=https://wa.me/919870044444"), "walk-in with link → one-tap WhatsApp forward", dec(r.loc));
+ok(/send=BK-[A-Z0-9]{5}/.test(dec(r.loc)), "walk-in with link → one-tap WhatsApp forward", dec(r.loc));
 r = await cu.page(r.loc);
-ok(r.text.includes("Send on WhatsApp"), "bookings page shows the Send on WhatsApp button");
+const fwd = r.text.match(/href="(http:\/\/localhost:3300\/f\/[^"]+)"[^>]*>Send on WhatsApp/)?.[1];
+ok(!!fwd, "bookings page shows the Send on WhatsApp button");
+const fr2 = await anon.req(fwd || "/x");
+ok(fr2.status === 302 && fr2.loc.startsWith("https://wa.me/919870044444?text=") && dec(fr2.loc).includes("Please pay"), "short forward link opens WhatsApp with details + pay link", fr2.loc);
+ok((await anon.req((fwd || "/x").replace(/\/[^/]+$/, "/bad"))).status === 404, "forward link needs the signed token");
 
 }
 console.log(`\n${pass} passed, ${fail} failed`);

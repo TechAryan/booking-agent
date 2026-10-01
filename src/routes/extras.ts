@@ -10,7 +10,7 @@ import {
   listServices, mapsLink, parseHolidays, quote, SOCIALS, socialsOf, todayIn, updateKnowledge,
 } from "../catalog.js";
 import { calendarApi, HOLIDAY_CALENDARS, publicHolidays } from "../calendar.js";
-import { book, Booking, BookingFilter, cancelBooking, checkPayment, confirmManualPayment, getBooking, isPaidLocked, listBookings, payPageUrl, reschedule, notifyCustomer, whenText } from "../bookings.js";
+import { book, Booking, forwardUrl, BookingFilter, cancelBooking, checkPayment, confirmManualPayment, getBooking, isPaidLocked, listBookings, payPageUrl, reschedule, notifyCustomer, whenText } from "../bookings.js";
 import { WorkspaceCalendar } from "../calendar.js";
 import { razorpayReady, upiReady, verifyRazorpay } from "../payments.js";
 import { crawlSite, socialPreview, summarizeBusiness } from "../importer.js";
@@ -506,8 +506,8 @@ extraRoutes.get("/bookings", requireLogin, async (req, res) => {
             ${w.google_ok ? html`<a class="btn" href="/bookings/new">${icon("plus", 16)} Add booking</a>` : ""}
           </div>
         </div>
-        ${typeof req.query.send === "string" && /^https:\/\/wa\.me\/\d+\?text=/.test(req.query.send)
-          ? html`<div class="card send-link"><span class="grow"><b>Send the payment link</b><small>Opens WhatsApp with the message ready. WhatsApp only lets the business number message a customer within 24 hours of their last message, so sending from your own phone always works.</small></span><a class="btn" href="${req.query.send}" target="_blank" rel="noopener">Send on WhatsApp</a></div>`
+        ${typeof req.query.send === "string" && /^BK-[A-Z0-9]{5}$/.test(req.query.send)
+          ? html`<div class="card send-link"><span class="grow"><b>Send the payment link</b><small>Opens WhatsApp with the message ready. WhatsApp only lets the business number message a customer within 24 hours of their last message, so sending from your own phone always works.</small></span><a class="btn" href="${forwardUrl(w, req.query.send)}" target="_blank" rel="noopener">Send on WhatsApp</a></div>`
           : ""}
         <div class="chips" role="tablist" aria-label="Filter bookings">
           ${FILTERS.map(([k, l]) => html`<a role="tab" aria-selected="${k === f ? "true" : "false"}" class="chip ${k === f ? "on" : ""} ${k === "pending" && counts[k] ? "attn" : ""}" href="/bookings?f=${k}">${l}<i>${counts[k]}</i></a>`)}
@@ -533,6 +533,7 @@ extraRoutes.get("/bookings", requireLogin, async (req, res) => {
                     : ""}
                   ${b.status === "held" ? html`<form method="post" action="/bookings/${b.ref}/check">${csrfField(req)}<button class="secondary small">Check payment</button></form>` : ""}
                   ${b.status === "confirmed" && f !== "past" ? html`<a class="btn secondary small" href="/bookings/${b.ref}/move">Move</a>` : ""}
+                  ${b.status !== "cancelled" && f !== "past" && b.customer_phone ? html`<a class="btn secondary small" href="${forwardUrl(w, b.ref)}" target="_blank" rel="noopener" title="Open WhatsApp with the booking details${b.pay_status === "awaiting" || b.pay_status === "pending_manual" ? " and payment link" : ""} ready to send">Send details</a>` : ""}
                   ${b.status !== "cancelled" && f !== "past" && !isPaidLocked(b)
                     ? html`<form method="post" action="/bookings/${b.ref}/cancel" data-confirm="Cancel ${b.ref}?" data-confirm-detail="${b.customer_name} (${b.service_name}, ${DateTime.fromISO(b.start_at).setZone(w.timezone).toFormat("d LLL, h:mm a")}) is told on WhatsApp if possible.${b.pay_status === "paid" ? " They paid online: refund from your Razorpay dashboard." : ""}" data-confirm-ok="Cancel booking">${csrfField(req)}<button class="icon-btn danger-ghost" aria-label="Cancel booking">${icon("trash", 16)}</button></form>`
                     : ""}
@@ -648,8 +649,7 @@ extraRoutes.post("/bookings/new", requireLogin, checkCsrf, async (req, res) => {
   if (!r.ok) return res.redirect(withMsg("/bookings/new", "err", r.message));
   if (r.payUrl) {
     // Hand the owner a one-tap way to send the link from their own WhatsApp (no 24-hour limit there).
-    const text = `Hi ${String(b.name).trim().split(/\s+/)[0]}, you're booked at ${w.business_name} on ${r.when} (ref ${r.ref}). Please pay ${inr(r.amount ?? 0)} here: ${r.payUrl}`;
-    return res.redirect(withMsg(`/bookings?f=pending&send=${encodeURIComponent(`https://wa.me/${full}?text=${encodeURIComponent(text)}`)}`, "ok", `Booked ${r.ref}. Send the payment link to the customer.`));
+    return res.redirect(withMsg(`/bookings?f=pending&send=${encodeURIComponent(r.ref)}`, "ok", `Booked ${r.ref}. Send the payment link to the customer.`));
   }
   if (b.notify === "1") {
     const bk = await getBooking(w, r.ref);

@@ -8,7 +8,7 @@ import {
   addHoliday, addOffer, addService, deleteHoliday, deleteOffer, deleteService, findService, inr, knowledgeForPrompt, listHolidays,
   listOffers, listServices, mapsLink, normIndian, quote, Service, socialsOf, todayIn, updateService,
 } from "./catalog.js";
-import { book, Booking, cancelBooking, checkPayment, confirmManualPayment, getBooking, listBookings, listForOwner, notifyCustomer, notifyOwners, priceInfo, reschedule, tryWhatsApp, whenText } from "./bookings.js";
+import { book, Booking, forwardText, forwardUrl, cancelBooking, checkPayment, confirmManualPayment, getBooking, listBookings, listForOwner, notifyCustomer, notifyOwners, priceInfo, reschedule, tryWhatsApp, whenText } from "./bookings.js";
 import { attachOwnerProof, latestLoosePhoto, submitCustomerProof } from "./proofs.js";
 import { razorpayReady, upiReady } from "./payments.js";
 
@@ -438,18 +438,12 @@ async function runOwnerTool(ws: Workspace, name: string, input: any, services: S
         channel: "phone", owner: `wa:${phone}`, byOwner: true, phoneVerified: true,
       });
       if (!r.ok) return r;
-      const first = String(input.customer_name || "").trim().split(/\s+/)[0] || "there";
-      const lines = [
-        `Hi ${first}, you're booked at ${ws.business_name}: ${(await getBooking(ws, r.ref))?.service_name}, ${r.when}. Ref ${r.ref}.`,
-        r.payUrl ? `Please pay ${inr(r.amount ?? 0)} here: ${r.payUrl}${r.status === "awaiting_payment" ? ` (the slot is held for ${r.expiresInMinutes} minutes)` : ""}` : "",
-        r.meetLink ? `Join online: ${r.meetLink}` : "",
-        r.location ? `Address: ${r.location}${r.mapsLink ? ` · Map: ${r.mapsLink}` : ""}` : "",
-      ].filter(Boolean);
-      const text = lines.join("\n");
+      const b = (await getBooking(ws, r.ref))!;
+      const text = forwardText(ws, b);
       const sent = await tryWhatsApp(ws, phone, text);
       return {
         ...r, customer_message: text, whatsapp_sent: sent,
-        forward_link: sent ? undefined : `https://wa.me/${phone}?text=${encodeURIComponent(text)}`,
+        forward_link: sent ? undefined : forwardUrl(ws, r.ref),
       };
     }
     case "attach_payment_proof": {

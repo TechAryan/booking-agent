@@ -12,7 +12,7 @@ import { ICON_LINKS } from "../views/layout.js";
 import QRCode from "qrcode";
 import { DateTime } from "luxon";
 import { inr, mapsLink, ownerPhones } from "../catalog.js";
-import { Booking, getBooking, markPaid, checkPayment, payToken, whenText } from "../bookings.js";
+import { Booking, forwardText, getBooking, markPaid, checkPayment, payToken, whenText } from "../bookings.js";
 import { upiUri, verifyCallbackSignature, verifyWebhookSignature } from "../payments.js";
 
 export const publicRoutes = Router();
@@ -334,6 +334,17 @@ publicRoutes.get("/pay/:id/:ref/:token/status", async (req, res) => {
   if (rateLimited(`paystatus:${req.ip}`, 60, 60_000)) return res.status(429).json({});
   res.setHeader("Cache-Control", "no-store");
   res.json({ status: b.status, pay_status: b.pay_status });
+});
+
+// Short "send to customer" link for owners: opens their own WhatsApp with the booking details typed in.
+publicRoutes.get("/f/:id/:ref/:token", async (req, res) => {
+  if (rateLimited(`fwd:${req.ip}`, 60, 60_000)) return res.status(429).send("Too many requests.");
+  const ws = await getWorkspaceByPublicId(String(req.params.id));
+  const b = ws ? await getBooking(ws, String(req.params.ref)) : undefined;
+  if (!ws || !b || !safeEqual(String(req.params.token), payToken(ws, b.ref))) return res.status(404).send("Booking not found.");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.redirect(302, `https://wa.me/${b.customer_phone.replace(/\D/g, "")}?text=${encodeURIComponent(forwardText(ws, b))}`);
 });
 
 // Payment screenshot from the pay page (website-chat customers have no WhatsApp to send it on).
