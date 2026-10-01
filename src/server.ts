@@ -9,6 +9,9 @@ import { publicRoutes } from "./routes/public.js";
 import { authRoutes } from "./routes/auth.js";
 import { adminRoutes } from "./routes/admin.js";
 import { setupRoutes } from "./routes/setup.js";
+import { extraRoutes } from "./routes/extras.js";
+import { sweepPayments } from "./bookings.js";
+import { db as _db } from "./db.js";
 
 const app = express();
 app.set("trust proxy", 1); // behind Railway/Render/Cloudflare
@@ -50,9 +53,15 @@ app.post("/theme", (req, res) => {
   res.json({ ok: true });
 });
 
+// Test-only window into the fake Google Calendar.
+if (process.env.FAKE_GOOGLE_CALENDAR === "1" && process.env.NODE_ENV === "test") {
+  app.get("/__test/google-events", async (_req, res) => res.json((await import("./testing/fakeGoogle.js")).fakeEvents));
+}
+
 app.use(authRoutes);
 app.use(adminRoutes);
 app.use(setupRoutes);
+app.use(extraRoutes);
 
 app.use((_req, res) => res.status(404).send("Page not found."));
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -67,6 +76,9 @@ async function main() {
   app.listen(env.port, () => {
     console.log(`🚀 ${env.appName} running at ${env.publicUrl} (port ${env.port}) · database: ${db.kind()}`);
     startKeepAlive();
+    // Confirm payments whose webhook we missed and release slots whose payment link ran out.
+    const tick = () => sweepPayments((id) => _db.get("SELECT * FROM workspaces WHERE id=?", id)).catch((e) => console.error("payment sweep", e?.message));
+    setInterval(tick, Number(process.env.PAYMENT_SWEEP_MS || 60_000)).unref();
   });
 }
 

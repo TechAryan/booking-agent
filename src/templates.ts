@@ -15,7 +15,13 @@ export interface Template {
   extra?: string;
   tags?: string; // extra search words
   popular?: boolean;
+  mode?: "online" | "offline" | "both";
 }
+
+/** Usual way each kind of business meets customers (a template can override it). */
+export const CAT_MODE: Record<string, "online" | "offline" | "both"> = {
+  creators: "online", pros: "both", shops: "offline", health: "offline", beauty: "offline", fitness: "offline", education: "both", home: "offline", events: "offline", auto: "offline",
+};
 
 export const CATEGORIES: [string, string][] = [
   ["popular", "Popular"],
@@ -42,30 +48,30 @@ export const TEMPLATES: Template[] = [
     extra: "Brands and fans book a call with me here. For paid promotions, ask for the brand name, product and budget before booking. Share my rate card only if I've written it below." },
   { key: "podcaster", cat: "creators", emoji: "🎙️", label: "Podcaster", tags: "podcast guest interview",
     services: "Guest interview slot, Pre-interview call, Sponsor discussion", open: 10, close: 19, slot: 60, days: MF },
-  { key: "photographer", cat: "creators", emoji: "📸", label: "Photographer / videographer", popular: true, tags: "photo shoot video wedding",
+  { key: "photographer", mode: "offline", cat: "creators", emoji: "📸", label: "Photographer / videographer", popular: true, tags: "photo shoot video wedding",
     services: "Portrait shoot, Product shoot, Event coverage enquiry, Pre-wedding shoot consultation, Editing call", open: 9, close: 20, slot: 60, days: ALL },
   { key: "artist", cat: "creators", emoji: "🎨", label: "Artist / designer", tags: "graphic design logo illustration tattoo",
     services: "Design consultation, Logo discussion, Commission enquiry, Review call", open: 11, close: 19, slot: 30, days: WEEK },
-  { key: "musician", cat: "creators", emoji: "🎸", label: "Musician / DJ", tags: "singer band dj live performance",
+  { key: "musician", mode: "offline", cat: "creators", emoji: "🎸", label: "Musician / DJ", tags: "singer band dj live performance",
     services: "Event booking enquiry, Music lesson, Studio session", open: 11, close: 21, slot: 60, days: ALL },
 
   // Professionals & freelancers
   { key: "consultant", cat: "pros", emoji: "💼", label: "Consultant", popular: true, tags: "business advisor strategy",
     services: "Free discovery call, Consultation (paid), Follow-up session, Strategy workshop", open: 10, close: 19, slot: 30, days: MF,
     extra: "The first discovery call is free for 15 minutes. Ask the customer what they need help with before booking." },
-  { key: "software", cat: "pros", emoji: "👨‍💻", label: "Software developer", popular: true, tags: "engineer freelancer app website developer it tech",
+  { key: "software", mode: "online", cat: "pros", emoji: "👨‍💻", label: "Software developer", popular: true, tags: "engineer freelancer app website developer it tech",
     services: "Project discussion call, Website / app quote, Technical consultation, Code review session, Support call", open: 10, close: 19, slot: 30, days: MF,
     extra: "Ask what they want built (website, app, fix) and their timeline before booking the call." },
-  { key: "marketing", cat: "pros", emoji: "📈", label: "Digital marketing expert", popular: true, tags: "seo ads social media marketing agency",
+  { key: "marketing", mode: "online", cat: "pros", emoji: "📈", label: "Digital marketing expert", popular: true, tags: "seo ads social media marketing agency",
     services: "Free marketing audit call, SEO consultation, Social media strategy, Ads account review, Monthly review meeting", open: 10, close: 19, slot: 30, days: WEEK },
-  { key: "ca", cat: "pros", emoji: "🧾", label: "CA / tax consultant", tags: "chartered accountant gst itr tax filing accountant",
+  { key: "ca", mode: "both", cat: "pros", emoji: "🧾", label: "CA / tax consultant", tags: "chartered accountant gst itr tax filing accountant",
     services: "Income tax filing, GST registration / filing, Business registration, Accounting consultation", open: 10, close: 18, slot: 30, days: WEEK },
   { key: "lawyer", cat: "pros", emoji: "⚖️", label: "Lawyer / legal advisor", tags: "advocate legal",
     services: "Legal consultation, Document review, Property matter, Family matter", open: 10, close: 18, slot: 30, days: WEEK,
     extra: "Don't give legal advice in chat. Book a consultation instead." },
   { key: "coach", cat: "pros", emoji: "🧭", label: "Life / career coach", tags: "mentor coaching career",
     services: "Intro call, Coaching session, Career guidance, Resume review", open: 9, close: 21, slot: 45, days: ALL },
-  { key: "realestate", cat: "pros", emoji: "🏠", label: "Real estate agent", tags: "property broker flat rent sale",
+  { key: "realestate", mode: "offline", cat: "pros", emoji: "🏠", label: "Real estate agent", tags: "property broker flat rent sale",
     services: "Property visit, Rental enquiry, Buying consultation, Selling consultation", open: 10, close: 19, slot: 45, days: ALL },
   { key: "insurance", cat: "pros", emoji: "🛡️", label: "Insurance / finance advisor", tags: "mutual fund loan financial planner",
     services: "Policy consultation, Claim help, Investment planning call, Loan enquiry", open: 10, close: 19, slot: 30, days: WEEK },
@@ -100,10 +106,10 @@ export const TEMPLATES: Template[] = [
     extra: "Don't give medical advice. For emergencies, tell the customer to call the clinic or go to the nearest hospital." },
   { key: "physio", cat: "health", emoji: "🦴", label: "Physiotherapist", tags: "physio therapy",
     services: "Assessment, Physiotherapy session, Home visit, Follow-up", open: 8, close: 20, slot: 45, days: WEEK },
-  { key: "therapist", cat: "health", emoji: "🧠", label: "Therapist / counsellor", tags: "psychologist counselling mental health",
+  { key: "therapist", mode: "both", cat: "health", emoji: "🧠", label: "Therapist / counsellor", tags: "psychologist counselling mental health",
     services: "First session, Therapy session (online), Therapy session (in person), Couples session", open: 10, close: 20, slot: 60, days: WEEK,
     extra: "Keep replies gentle and private. If someone says they are in danger, share the local emergency number and ask them to reach out to someone right away." },
-  { key: "dietitian", cat: "health", emoji: "🥗", label: "Dietitian / nutritionist", tags: "diet nutrition weight loss",
+  { key: "dietitian", mode: "both", cat: "health", emoji: "🥗", label: "Dietitian / nutritionist", tags: "diet nutrition weight loss",
     services: "First consultation, Diet plan review, Weekly follow-up", open: 9, close: 19, slot: 30, days: WEEK },
   { key: "vet", cat: "health", emoji: "🐾", label: "Vet / pet care", tags: "veterinary pet grooming dog cat",
     services: "Vet consultation, Vaccination, Pet grooming, Pet boarding enquiry", open: 9, close: 20, slot: 30, days: ALL },
@@ -142,9 +148,9 @@ export const TEMPLATES: Template[] = [
     services: "Counselling session, Demo class, Admission enquiry, Parent meeting", open: 9, close: 19, slot: 30, days: WEEK },
   { key: "music-teacher", cat: "education", emoji: "🎹", label: "Music teacher", tags: "guitar piano singing lessons",
     services: "Trial lesson, Guitar lesson, Keyboard lesson, Vocal lesson", open: 10, close: 21, slot: 60, days: ALL },
-  { key: "language", cat: "education", emoji: "🗣️", label: "Language / spoken English", tags: "english ielts language class",
+  { key: "language", mode: "both", cat: "education", emoji: "🗣️", label: "Language / spoken English", tags: "english ielts language class",
     services: "Level test, Trial class, Spoken English class, IELTS preparation", open: 8, close: 21, slot: 60, days: WEEK },
-  { key: "driving", cat: "education", emoji: "🚗", label: "Driving school", tags: "driving lessons licence",
+  { key: "driving", mode: "offline", cat: "education", emoji: "🚗", label: "Driving school", tags: "driving lessons licence",
     services: "Trial lesson, Driving lesson, Licence test preparation", open: 6, close: 19, slot: 60, days: ALL },
 
   // Home & repairs
@@ -172,7 +178,7 @@ export const TEMPLATES: Template[] = [
   // Auto & travel
   { key: "garage", cat: "auto", emoji: "🛠️", label: "Car / bike service", tags: "garage mechanic car wash bike",
     services: "General service, Repair inspection, Car wash, Pickup and drop", open: 9, close: 19, slot: 60, days: WEEK },
-  { key: "travel", cat: "auto", emoji: "✈️", label: "Travel agent", tags: "tour holiday visa tickets",
+  { key: "travel", mode: "both", cat: "auto", emoji: "✈️", label: "Travel agent", tags: "tour holiday visa tickets",
     services: "Holiday planning call, Visa consultation, Ticket booking help", open: 10, close: 19, slot: 30, days: WEEK },
   { key: "homestay", cat: "auto", emoji: "🏡", label: "Homestay / hotel", tags: "hotel stay room",
     services: "Room enquiry call, Property visit, Group booking enquiry", open: 9, close: 21, slot: 30, days: ALL },

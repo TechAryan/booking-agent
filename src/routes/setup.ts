@@ -3,16 +3,18 @@ import multer from "multer";
 import { DateTime } from "luxon";
 import { checkCsrf, requireLogin } from "../auth.js";
 import { reply, resetConversation, testAnthropicKey } from "../agent.js";
-import { parseServiceAccount, testCalendar } from "../calendar.js";
+import { googleAuthUrl, googleExchange, googleRevoke, googleSignInEnabled, listWritableCalendars, parseServiceAccount, testCalendarFor } from "../calendar.js";
 import { db, logActivity, Workspace } from "../db.js";
 import { env } from "../env.js";
 import { createWebhook, deleteWebhook, verifyKapso } from "../kapso.js";
+import { countPending } from "../bookings.js";
 import { getWorkspaceForUser, recentActivity, updateWorkspace } from "../models.js";
 import { decrypt, encrypt, mask, randomToken, rateLimited } from "../security.js";
 import { html, raw, Safe } from "../views/html.js";
 import { icon, tile } from "../views/icons.js";
 import { csrfField, page, withMsg } from "../views/layout.js";
-import { CATEGORIES, TEMPLATES } from "../templates.js";
+import { CAT_MODE, CATEGORIES, TEMPLATES } from "../templates.js";
+import { inr, listServices, normIndian, ownerPhones, saveServices, Service } from "../catalog.js";
 
 export const setupRoutes = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 64 * 1024, files: 1 } });
@@ -58,18 +60,50 @@ function stepNav(active: string) {
 setupRoutes.get("/", requireLogin, async (req, res) => {
   const w = await ws(req);
   const u = req.user!;
-  const steps: { key: string; title: string; desc: string; done: boolean; show: boolean; optional?: boolean }[] = [
+  const services = await listServices(w);
+  const anyPaid = services.some((x) => x.price > 0);
+  const knowledgeN = Number((await db.get("SELECT COUNT(*) AS c FROM knowledge WHERE workspace_id=?", w.id))?.c ?? 0);
+  const holidaysN = Number((await db.get("SELECT COUNT(*) AS c FROM holidays WHERE workspace_id=? AND COALESCE(end_date, date) >= date('now')", w.id))?.c ?? 0);
+  const payReady = !!(w.razorpay_key_id || w.upi_id);
+  const pendingN = await countPending(w);
+  let today: Safe | string = "";
+  if (w.google_ok) {
+    const now = DateTime.now().setZone(w.timezone || "Asia/Kolkata");
+    const todays = await db.all<{ ref: string; start_at: string; customer_name: string; service_name: string; mode: string; pay_status: string; status: string }>(
+      "SELECT ref, start_at, customer_name, service_name, mode, pay_status, status FROM bookings WHERE workspace_id=? AND status IN ('confirmed','held') AND start_at >= ? AND start_at < ? ORDER BY start_at LIMIT 6",
+      w.id, now.startOf("day").toISO()!, now.endOf("day").toISO()!
+    );
+    const month = Number((await db.get("SELECT COALESCE(SUM(amount),0) AS s FROM bookings WHERE workspace_id=? AND pay_status='paid' AND created_at >= ?", w.id, now.startOf("month").toUTC().toSQL({ includeOffset: false })!))?.s ?? 0);
+    today = html`<div class="card today">
+      <div>
+        <h2>${tile("book")} Today${todays.length ? ` · ${todays.length} booking${todays.length === 1 ? "" : "s"}` : ""}</h2>
+        ${todays.length
+          ? html`<ul>${todays.map((b) => html`<li><b class="t">${DateTime.fromISO(b.start_at).setZone(w.timezone).toFormat("h:mm a")}</b><span class="grow">${b.customer_name} <small>· ${b.service_name}${b.mode === "online" ? " · online" : ""}${b.status === "held" ? " · awaiting payment" : b.pay_status === "pending_manual" ? " · UPI to confirm" : ""}</small></span></li>`)}</ul>`
+          : html`<p class="muted">Nothing booked for today${services.length ? "" : " yet"}.</p>`}
+        <div class="actions"><a class="btn small" href="/bookings">All bookings</a><a class="btn small secondary" href="/bookings/new">${icon("plus", 14)} Add booking</a>${pendingN ? html`<a class="btn small secondary attn" href="/bookings?f=pending">${pendingN} need${pendingN === 1 ? "s" : ""} action</a>` : ""}</div>
+      </div>
+      <div class="money">
+        <span>Paid this month</span>
+        <b>${inr(month)}</b>
+        <span>${anyPaid ? (payReady ? "Online and confirmed payments." : "Connect payments to get paid online.") : "All your services are free."}</span>
+      </div>
+    </div>`;
+  }
+  const steps: { key: string; title: string; desc: string; done: boolean; show: boolean; optional?: boolean; extra?: boolean; href?: string }[] = [
     { key: "business", title: "Business details", desc: "Name, services, working hours", done: !!w.business_done, show: true },
     { key: "claude", title: "Connect Claude", desc: w.shared_key_id ? "Included in your plan, nothing to do" : "The AI that talks to your customers", done: !!w.claude_ok, show: true },
     { key: "google", title: "Connect Google Calendar", desc: "Where bookings are saved", done: !!w.google_ok, show: true },
     { key: "test", title: "Test your assistant", desc: "Chat with it and make a test booking", done: !!w.tested, show: true },
+    { key: "profile", title: "Profile & knowledge", desc: knowledgeN || w.address ? `${w.address ? "Address added" : "No address yet"} · ${knowledgeN} file${knowledgeN === 1 ? "" : "s"} or notes` : "Address, map, contact, website, files so it knows your business", done: !!(w.address || w.contact_phone || knowledgeN), show: true, optional: true, extra: true },
+    { key: "payments", title: "Payments", desc: payReady ? (w.razorpay_key_id ? "Razorpay connected" : "UPI set up") + (w.online_discount_pct ? ` · ${w.online_discount_pct}% online discount` : "") : anyPaid ? "You have paid services: let customers pay online" : "Online payment, pay at venue, discount", done: payReady, show: true, optional: true, extra: true },
+    { key: "holidays", title: "Holidays", desc: holidaysN ? `${holidaysN} upcoming closed day${holidaysN === 1 ? "" : "s"}` : "Days you're closed: no bookings then", done: holidaysN > 0, show: true, optional: true, extra: true },
     { key: "widget", title: "Website chat widget", desc: "A booking chat on your website", done: !!w.widget_enabled, show: !!u.perm_widget, optional: true },
     { key: "whatsapp", title: "Connect WhatsApp", desc: "Customers book by messaging you", done: !!w.whatsapp_enabled, show: !!u.perm_whatsapp, optional: true },
   ];
   const shown = steps.filter((s) => s.show);
   const core = steps.filter((s) => !s.optional);
   const coreDone = core.filter((s) => s.done).length;
-  const next = shown.find((s) => !s.done);
+  const next = shown.find((s) => !s.done && !s.extra);
   const live = [w.widget_enabled ? "Widget" : "", w.whatsapp_enabled ? "WhatsApp" : ""].filter(Boolean);
   const act = await recentActivity(w.id, 8);
   const weekBookings = Number((await db.get("SELECT COUNT(*) AS c FROM activity WHERE workspace_id=? AND kind='booking' AND channel!='test' AND created_at >= datetime('now','-7 days')", w.id))?.c ?? 0);
@@ -118,13 +152,14 @@ setupRoutes.get("/", requireLogin, async (req, res) => {
           <div class="stat card"><span class="tile sm" style="--tile:#5856d6">${icon("test", 17)}</span><b data-count="${chats}">${chats}</b><span>Conversations</span></div>
           <div class="stat card"><span class="tile sm" style="--tile:#ff9500">${icon("bolt", 17)}</span><b data-count="${allBookings}">${allBookings}</b><span>Total bookings</span></div>
         </div>
+        ${today}
         <h3 class="section-title">Setup</h3>
         <div class="card list">
           <ul class="steps">
             ${shown.map(
               (s) => html`<li>
                 <a class="row-link" href="/setup/${s.key}">
-                  ${tile(s.key === "google" ? "calendar" : s.key)}
+                  ${tile(s.key === "google" ? "calendar" : s.key === "profile" ? "profile" : s.key === "payments" ? "wallet" : s.key === "holidays" ? "holiday" : s.key)}
                   <span class="grow"><b>${s.title}</b>${s.optional ? html` <span class="tag">Optional</span>` : ""}<small>${s.desc}</small></span>
                   ${s.done ? html`<span class="state done">${icon("check", 14)} Done</span>` : s.key === next?.key ? html`<span class="state next">Next</span>` : ""}
                   <span class="chev">${icon("chevron", 16)}</span>
@@ -165,6 +200,7 @@ function ago(sqliteUtc: string): string {
 
 setupRoutes.get("/setup/business", requireLogin, async (req, res) => {
   const w = await ws(req);
+  const services = await listServices(w);
   const days = new Set(w.working_days.split(",").map(Number));
   const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   const hours = Array.from({ length: 24 }, (_, h) => h);
@@ -180,8 +216,9 @@ setupRoutes.get("/setup/business", requireLogin, async (req, res) => {
             ${csrfField(req)}
             <label>Business name</label>
             <input type="text" name="business_name" value="${w.business_name}" placeholder="Smile Dental Clinic" required maxlength="100">
-            <label>Services <span class="hint">comma separated</span></label>
-            <input type="text" name="services" value="${w.services}" placeholder="Consultation, Cleaning, Filling" required maxlength="500">
+            <input type="hidden" name="business_type" value="${w.business_type}" data-business-type>
+            <label>Services <span class="hint">what customers can book. Price, online/in person and details are optional</span></label>
+            ${servicesEditor(services)}
             <label>Working days</label>
             <div class="checks chips">${dayNames.map((d, i) => html`<label><input type="checkbox" name="days" value="${i + 1}" ${days.has(i + 1) ? "checked" : ""}> ${d}</label>`)}</div>
             <div class="grid">
@@ -210,12 +247,14 @@ setupRoutes.post("/setup/business", requireLogin, checkCsrf, async (req, res) =>
   const days = ([] as string[]).concat(b.days || []).map(Number).filter((d) => d >= 1 && d <= 7).sort();
   const open = Number(b.open_hour), close = Number(b.close_hour);
   const back = "/setup/business";
-  if (!String(b.business_name || "").trim() || !String(b.services || "").trim()) return res.redirect(withMsg(back, "err", "Business name and services are required."));
+  const rows = readServiceRows(b);
+  if (!String(b.business_name || "").trim() || !rows.length) return res.redirect(withMsg(back, "err", "Add your business name and at least one service."));
   if (!days.length) return res.redirect(withMsg(back, "err", "Pick at least one working day."));
   if (!(close > open)) return res.redirect(withMsg(back, "err", "Closing time must be after opening time."));
-  await updateWorkspace((await ws(req)).id, {
+  const w = await ws(req);
+  await updateWorkspace(w.id, {
     business_name: String(b.business_name).trim().slice(0, 100),
-    services: String(b.services).trim().slice(0, 500),
+    business_type: String(b.business_type || "").trim().slice(0, 60),
     working_days: days.join(","),
     open_hour: open,
     close_hour: close,
@@ -223,10 +262,59 @@ setupRoutes.post("/setup/business", requireLogin, checkCsrf, async (req, res) =>
     timezone: TIMEZONES.includes(b.timezone) ? b.timezone : "Asia/Kolkata",
     extra_info: String(b.extra_info || "").slice(0, 3000),
     business_done: 1,
+    services_migrated: 1,
   });
+  await saveServices({ ...w, services_migrated: 1 }, rows);
   const after = await ws(req);
   res.redirect(withMsg(!after.claude_ok ? "/setup/claude" : !after.google_ok ? "/setup/google" : "/", "ok", "Business details saved."));
 });
+
+/** Service rows from the form (repeated fields), or the old comma-separated text. */
+function readServiceRows(b: Record<string, any>) {
+  const arr = (k: string) => ([] as string[]).concat(b[k] ?? []);
+  const names = arr("svc_name");
+  if (!names.length && b.services) return String(b.services).split(",").map((n) => ({ name: n.trim() })).filter((r) => r.name);
+  const ids = arr("svc_id"), kinds = arr("svc_kind"), prices = arr("svc_price"), modes = arr("svc_mode"), details = arr("svc_details"), mins = arr("svc_minutes");
+  return names.map((name, i) => ({
+    id: ids[i], name, details: details[i], mode: modes[i],
+    price: kinds[i] === "paid" ? prices[i] : 0, // "Paid" with no amount (or 0) is saved as free
+    duration_minutes: mins[i] || null,
+  })).filter((r) => String(r.name || "").trim()).slice(0, 60);
+}
+
+const MODE_LABEL = { offline: "In person", online: "Online", both: "Both" } as const;
+
+function serviceRow(s: Partial<Service> | null) {
+  const paid = !!s && (s.price ?? 0) > 0;
+  return html`<div class="svc-row" data-svc-row>
+    <input type="hidden" name="svc_id" value="${s?.id ?? ""}">
+    <div class="svc-main">
+      <input type="text" name="svc_name" value="${s?.name ?? ""}" placeholder="e.g. Consultation" maxlength="80" aria-label="Service name" class="svc-name">
+      <select name="svc_kind" aria-label="Free or paid" class="svc-kind" data-svc-kind><option value="free" ${paid ? "" : "selected"}>Free</option><option value="paid" ${paid ? "selected" : ""}>Paid</option></select>
+      <div class="affix svc-price" ${paid ? "" : html`hidden`} data-svc-price><span>₹</span><input type="text" name="svc_price" value="${paid ? String(s!.price) : ""}" inputmode="decimal" placeholder="500" aria-label="Price"></div>
+      <select name="svc_mode" aria-label="Online or in person" class="svc-mode">${(["offline", "online", "both"] as const).map((m) => html`<option value="${m}" ${(s?.mode ?? "offline") === m ? "selected" : ""}>${MODE_LABEL[m]}</option>`)}</select>
+      <button type="button" class="icon-btn" data-svc-more aria-label="Details" title="Details and length">${icon("chevron", 16)}</button>
+      <button type="button" class="icon-btn danger-ghost" data-svc-remove aria-label="Remove service" title="Remove">${icon("trash", 16)}</button>
+    </div>
+    <div class="svc-more" hidden data-svc-details>
+      <textarea name="svc_details" maxlength="1000" placeholder="Details the assistant can share: what's included, who it's for, what to bring… (optional)">${s?.details ?? ""}</textarea>
+      <select name="svc_minutes" aria-label="Length">
+        <option value="">Default length</option>
+        ${[15, 20, 30, 45, 60, 75, 90, 120, 150, 180, 240].map((m) => html`<option value="${m}" ${s?.duration_minutes === m ? "selected" : ""}>${m < 60 ? `${m} min` : `${m / 60} hour${m === 60 ? "" : "s"}`.replace(".5 hours", "½ hours")}</option>`)}
+      </select>
+    </div>
+  </div>`;
+}
+
+function servicesEditor(list: Service[]) {
+  return html`<div class="svc-editor" data-svc-editor>
+    <div class="svc-head" aria-hidden="true"><span>Service</span><span>Price</span><span></span><span>Where</span></div>
+    <div data-svc-list>${(list.length ? list : [null]).map((s) => serviceRow(s))}</div>
+    <template data-svc-template>${serviceRow(null)}</template>
+    <button type="button" class="secondary small" data-svc-add>${icon("plus", 14)} Add service</button>
+    <p class="hint">"Paid" with no price is treated as free. Online sessions get a Google Meet link when you sign in with Google.</p>
+  </div>`;
+}
 
 // ---------- Step 2: Claude ----------
 
@@ -299,13 +387,14 @@ setupRoutes.post("/setup/claude", requireLogin, checkCsrf, async (req, res) => {
 
 setupRoutes.get("/setup/google", requireLogin, async (req, res) => {
   const w = await ws(req);
-  res.send(
-    page(req, {
-      title: "Connect Google Calendar",
-      body: html`${stepNav("google")}
-        <div class="page-head">${tile("calendar", "lg")}<div><p class="eyebrow">Step 3 of 4</p><h1>Connect Google Calendar</h1></div></div>
-        <p class="sub">Bookings go into a Google Calendar you choose, and busy times there are never offered to customers. About 15 minutes, done once.</p>
-        <div class="card">
+  const signIn = googleSignInEnabled();
+  const viaGoogle = !!w.google_refresh_enc;
+  let calendars: { id: string; name: string; primary: boolean }[] = [];
+  let listError = "";
+  if (viaGoogle) {
+    try { calendars = await listWritableCalendars(w); } catch (e: any) { listError = /invalid_grant/i.test(e?.message) ? "Google access was removed. Sign in again." : e?.message || "Couldn't load your calendars."; }
+  }
+  const keyCards = html`<div class="card">
           <h2>Part A: create a key in Google Cloud</h2>
           <ol class="guide">
             <li>Open <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">Google Cloud → New project</a>. Name it <code>booking-assistant</code> and click <b>Create</b>. Make sure it's selected in the project picker at the top.</li>
@@ -344,7 +433,39 @@ setupRoutes.get("/setup/google", requireLogin, async (req, res) => {
             <div class="row"><button ${w.google_sa_email ? "" : "disabled"}>Test and save</button>
               ${w.google_ok ? html`<span class="pill ok">Connected</span>` : ""}</div>
           </form>
-        </div>`,
+        `;
+  const googleBtn = html`<a class="btn google-btn" href="/setup/google/start">${raw(GOOGLE_G)} ${viaGoogle ? "Sign in again" : "Sign in with Google"}</a>`;
+  res.send(
+    page(req, {
+      title: "Connect Google Calendar",
+      body: html`${stepNav("google")}
+        <div class="page-head">${tile("calendar", "lg")}<div><p class="eyebrow">Step 3 of 4</p><h1>Connect Google Calendar</h1></div></div>
+        <p class="sub">Bookings go into your Google Calendar, and times you're busy there are never offered to customers.${signIn ? " Customers also get an email invite, and online sessions get a Google Meet link." : ""}</p>
+        ${signIn
+          ? html`<div class="card google-card">
+              ${viaGoogle
+                ? html`<div class="done-line big">${tile("check", "lg")}<span><b>Signed in as ${w.google_account_email || "your Google account"}</b><small>Invites and Meet links are on.</small></span></div>
+                  ${listError ? html`<p class="field-hint bad">${listError}</p>${googleBtn}` : html`
+                  <form method="post" action="/setup/google" data-busy="Checking your calendar…">
+                    ${csrfField(req)}
+                    <label>Put bookings in</label>
+                    <select name="calendar_id">${calendars.map((c) => html`<option value="${c.id}" ${c.id === w.google_calendar_id || (!w.google_calendar_id && c.primary) ? "selected" : ""}>${c.name}${c.primary ? " (main calendar)" : ""}</option>`)}</select>
+                    <p class="hint">Tip: a separate "Bookings" calendar keeps things tidy. Create one in Google Calendar, then reload this page.</p>
+                    <div class="row"><button>${w.google_ok ? "Save" : "Use this calendar"}</button>${w.google_ok ? html`<span class="pill ok">Connected</span>` : ""}</div>
+                  </form>`}
+                  <form method="post" action="/setup/google/disconnect" class="row" data-confirm="Disconnect Google?" data-confirm-detail="The assistant stops booking until you connect a calendar again. Existing events stay in your calendar." data-confirm-ok="Disconnect">
+                    ${csrfField(req)}<button class="secondary small">Disconnect</button>
+                  </form>`
+                : html`<h2>One click, no setup</h2>
+                  <p class="muted">Sign in with the Google account whose calendar you use. We only ask to see your free/busy times and add booking events. We never read your email.</p>
+                  <div class="row">${googleBtn}</div>
+                  <details class="hint-box"><summary>Seeing “Google hasn't verified this app”?</summary><p>That's normal while our app is under Google's review. Click <b>Advanced</b>, then <b>Go to ${env.appName} (unsafe)</b>, then <b>Continue</b>. Tick every permission box on the next screen.</p></details>`}
+            </div>
+            <details class="card advanced-card" ${!viaGoogle && w.google_sa_email ? "open" : ""}>
+              <summary><b>Use a service-account key instead</b><span class="hint">Advanced · no invites or Meet links</span></summary>
+              ${keyCards}
+            </details>`
+          : keyCards}`,
     })
   );
 });
@@ -360,23 +481,64 @@ setupRoutes.post("/setup/google/key", requireLogin, csrfFromQuery, upload.single
   if (!req.file) return res.redirect(withMsg(back, "err", "Choose the JSON key file first."));
   try {
     const sa = parseServiceAccount(req.file.buffer.toString("utf8"));
-    await updateWorkspace((await ws(req)).id, { google_sa_enc: encrypt(sa.json), google_sa_email: sa.email, google_ok: 0 });
+    // A key file replaces Google sign-in.
+    await updateWorkspace((await ws(req)).id, { google_sa_enc: encrypt(sa.json), google_sa_email: sa.email, google_ok: 0, google_refresh_enc: null, google_account_email: "" });
     res.redirect(withMsg(back, "ok", "Key uploaded. Now share your calendar with the email shown in Part B."));
   } catch (e: any) {
     res.redirect(withMsg(back, "err", e.message));
   }
 });
 
+// Sign in with Google: the state is tied to this login session, so nobody can plant their Google account on someone else's workspace.
+setupRoutes.get("/setup/google/start", requireLogin, async (req, res) => {
+  if (!googleSignInEnabled()) return res.redirect("/setup/google");
+  const w = await ws(req);
+  res.redirect(googleAuthUrl(req.csrf!, w.google_account_email || req.user!.email));
+});
+
+setupRoutes.get("/setup/google/callback", requireLogin, async (req, res) => {
+  const back = "/setup/google";
+  if (req.query.error) return res.redirect(withMsg(back, "err", req.query.error === "access_denied" ? "Google sign-in was cancelled." : `Google said: ${String(req.query.error).slice(0, 100)}`));
+  if (!req.csrf || req.query.state !== req.csrf) return res.redirect(withMsg(back, "err", "That sign-in link expired. Please try again."));
+  try {
+    const t = await googleExchange(String(req.query.code || ""));
+    if (!/calendar/.test(t.scopes) && t.scopes) throw new Error("Calendar permission wasn't given. Sign in again and tick all the boxes.");
+    const w = await ws(req);
+    const old = decrypt(w.google_refresh_enc);
+    await updateWorkspace(w.id, { google_refresh_enc: encrypt(t.refreshToken), google_account_email: t.email, google_ok: 0 });
+    if (old && old !== t.refreshToken) await googleRevoke(old);
+    // Pick their main calendar straight away; they can change it.
+    const fresh = await ws(req);
+    const cals = await listWritableCalendars(fresh);
+    const pick = cals.find((c) => c.id === fresh.google_calendar_id) || cals.find((c) => c.primary) || cals[0];
+    if (pick) {
+      const name = await testCalendarFor(fresh, pick.id);
+      await updateWorkspace(w.id, { google_calendar_id: pick.id, google_ok: 1 });
+      return res.redirect(withMsg(fresh.tested ? back : "/setup/test", "ok", `Google connected. Bookings go to "${name}".`));
+    }
+    res.redirect(withMsg(back, "ok", "Signed in. Now choose the calendar."));
+  } catch (e: any) {
+    res.redirect(withMsg(back, "err", e.message || "Google sign-in failed."));
+  }
+});
+
+setupRoutes.post("/setup/google/disconnect", requireLogin, checkCsrf, async (req, res) => {
+  const w = await ws(req);
+  const t = decrypt(w.google_refresh_enc);
+  if (t) await googleRevoke(t);
+  await updateWorkspace(w.id, { google_refresh_enc: null, google_account_email: "", google_ok: 0 });
+  res.redirect(withMsg("/setup/google", "ok", "Google disconnected."));
+});
+
 setupRoutes.post("/setup/google", requireLogin, checkCsrf, async (req, res) => {
   const w = await ws(req);
   const back = "/setup/google";
   const calId = String(req.body.calendar_id || "").trim();
-  const sa = decrypt(w.google_sa_enc);
-  if (!sa) return res.redirect(withMsg(back, "err", "Upload the key file first."));
-  if (!calId) return res.redirect(withMsg(back, "err", "Paste the Calendar ID."));
+  if (!w.google_refresh_enc && !decrypt(w.google_sa_enc)) return res.redirect(withMsg(back, "err", "Connect Google first."));
+  if (!calId) return res.redirect(withMsg(back, "err", "Choose or paste the calendar."));
   if (rateLimited(`google-test:${w.id}`, 15, 10 * 60_000)) return res.redirect(withMsg(back, "err", "Too many tries. Wait a few minutes."));
   try {
-    const name = await testCalendar(sa, calId);
+    const name = await testCalendarFor(w, calId);
     await updateWorkspace(w.id, { google_calendar_id: calId, google_ok: 1 });
     res.redirect(withMsg(w.tested ? "/" : "/setup/test", "ok", `Connected to "${name}".`));
   } catch (e: any) {
@@ -384,6 +546,8 @@ setupRoutes.post("/setup/google", requireLogin, checkCsrf, async (req, res) => {
     res.redirect(withMsg(back, "err", e.message));
   }
 });
+
+const GOOGLE_G = '<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 38.2 44 33 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>';
 
 // ---------- Step 4: Test chat ----------
 
@@ -414,7 +578,15 @@ setupRoutes.get("/setup/test", requireLogin, async (req, res) => {
               "Cancel my booking please",
             ].map((s) => html`<button type="button" class="secondary" data-suggest="${s}">${s}</button>`)}
           </div>
-          <div class="chat" id="chat" data-endpoint="/setup/test/message" data-reset="/setup/test/reset" data-csrf="${req.csrf}">
+          <div class="chat-as" role="radiogroup" aria-label="Chat as">
+            <span class="muted">Chat as</span>
+            <div class="segmented pay two">
+              <label><input type="radio" name="chat_as" value="customer" checked data-chat-as><span>A customer</span></label>
+              <label><input type="radio" name="chat_as" value="owner" data-chat-as><span>The owner (you)</span></label>
+            </div>
+          </div>
+          <p class="hint owner-hint" hidden data-owner-hint>This is what happens when you message your WhatsApp number from an owner number: try "show my services", "make Consultation ₹800", "add a 20% Diwali offer till 5 Nov", "close on 25 Dec", "what's booked tomorrow?".</p>
+          <div class="chat" id="chat" data-endpoint="/setup/test/message" data-reset="/setup/test/reset" data-csrf="${req.csrf}" data-as="customer">
             <div class="msgs"></div>
             <form><input type="text" placeholder="Type a message…" autocomplete="off" maxlength="1000"><button>Send</button></form>
           </div>
@@ -430,12 +602,13 @@ setupRoutes.get("/setup/test", requireLogin, async (req, res) => {
 setupRoutes.post("/setup/test/message", requireLogin, checkCsrf, async (req, res) => {
   const w = await ws(req);
   if (!isReady(w)) return res.status(400).json({ error: "Finish the setup steps first." });
-  if (rateLimited(`test-chat:${w.id}`, 40, 10 * 60_000)) return res.status(429).json({ error: "Slow down a little, then try again." });
+  if (rateLimited(`test-chat:${w.id}`, Number(process.env.TEST_CHAT_LIMIT || 40), 10 * 60_000)) return res.status(429).json({ error: "Slow down a little, then try again." });
   const text = String(req.body.text || "").trim();
   if (!text) return res.status(400).json({ error: "Empty message" });
   try {
+    const asOwner = req.body.as === "owner";
     const before = Number((await db.get("SELECT COUNT(*) AS c FROM activity WHERE workspace_id=? AND channel='test' AND kind='booking'", w.id))?.c ?? 0);
-    const out = await reply(w, "test", `user-${req.user!.id}`, text);
+    const out = await reply(w, "test", `user-${req.user!.id}`, text, { asOwner });
     const after = Number((await db.get("SELECT COUNT(*) AS c FROM activity WHERE workspace_id=? AND channel='test' AND kind='booking'", w.id))?.c ?? 0);
     if (after > 0 && !w.tested) await updateWorkspace(w.id, { tested: 1 });
     res.json({ reply: out, booked: after > before, firstBooking: before === 0 && after > 0 });
@@ -446,7 +619,7 @@ setupRoutes.post("/setup/test/message", requireLogin, checkCsrf, async (req, res
 });
 
 setupRoutes.post("/setup/test/reset", requireLogin, checkCsrf, async (req, res) => {
-  await resetConversation((await ws(req)).id, "test", `user-${req.user!.id}`);
+  await resetConversation((await ws(req)).id, "test", `${req.body?.as === "owner" ? "owner:" : ""}user-${req.user!.id}`);
   res.json({ ok: true });
 });
 
@@ -582,6 +755,16 @@ setupRoutes.get("/setup/whatsapp", requireLogin, async (req, res) => {
               <div class="row"><button>${w.whatsapp_enabled ? "Reconnect" : "Connect"}</button></div>
             </form>
           </div>
+          <div class="card" id="owners">
+            <div class="page-head tight">${tile("lock")}<div><h2>Owner numbers</h2></div></div>
+            <p class="muted">Messages from these numbers are treated as <b>you</b>, not a customer. From WhatsApp you can then ask things like “show my services”, “make Facial ₹900”, “20% off for everyone this Diwali week”, “close on 25 Dec” or “what's booked tomorrow?”. You'll also get alerts for new bookings and payments (within 24 hours of your last message, as WhatsApp only allows that).</p>
+            <form method="post" action="/setup/whatsapp/owners" data-busy="Saving…">
+              ${csrfField(req)}
+              <label>Owner WhatsApp numbers <span class="hint">with country code, separate several with commas</span></label>
+              <input type="text" name="owner_phones" value="${ownerPhones(w).map((p) => `+${p}`).join(", ")}" placeholder="+91 98765 43210" autocomplete="off">
+              <div class="row"><button class="secondary">Save owner numbers</button></div>
+            </form>
+          </div>
           ${w.whatsapp_enabled
             ? html`<div class="card">
                 <h2>Pause WhatsApp</h2>
@@ -635,6 +818,13 @@ setupRoutes.post("/setup/whatsapp", requireLogin, checkCsrf, async (req, res) =>
   }
 });
 
+setupRoutes.post("/setup/whatsapp/owners", requireLogin, checkCsrf, async (req, res) => {
+  const w = await ws(req);
+  const list = String(req.body.owner_phones || "").split(/[,;\n]/).map((p) => normIndian(p)).filter((p) => p.length >= 10 && p.length <= 15);
+  await updateWorkspace(w.id, { owner_phones: [...new Set(list)].join(",") });
+  res.redirect(withMsg("/setup/whatsapp#owners", "ok", list.length ? `Saved ${list.length} owner number${list.length === 1 ? "" : "s"}.` : "Owner numbers cleared."));
+});
+
 setupRoutes.post("/setup/whatsapp/disable", requireLogin, checkCsrf, async (req, res) => {
   const w = await ws(req);
   const key = decrypt(w.kapso_key_enc);
@@ -664,7 +854,7 @@ function quickStart(done: boolean) {
     </div>
     <div class="templates" data-templates>
       ${TEMPLATES.map((t) => {
-        const data = { label: t.label, services: t.services, open: t.open, close: t.close, slot: t.slot, days: t.days, extra: t.extra ?? "" };
+        const data = { label: t.label, services: t.services, open: t.open, close: t.close, slot: t.slot, days: t.days, extra: t.extra ?? "", mode: t.mode ?? CAT_MODE[t.cat] ?? "offline" };
         return html`<button type="button" class="template" data-template="${JSON.stringify(data)}" data-cat="${t.cat}${t.popular ? " popular" : ""}" data-search="${`${t.label} ${t.tags ?? ""} ${t.services}`.toLowerCase()}" ${t.popular ? "" : html`hidden`}><span class="emoji" aria-hidden="true">${t.emoji}</span><b>${t.label}</b><small>${t.slot} min · ${daysHint(t.days)}</small></button>`;
       })}
     </div>

@@ -24,3 +24,4 @@ form button{background:var(--accent);color:#fff;border:0;border-radius:50%;width
 form button:active{transform:scale(.9)}form button:disabled{opacity:.4}
 footer{text-align:center;font-size:11px;color:var(--text2);padding:2px 0 8px;background:var(--bg)}
 @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+.m a { color: inherit; text-decoration: underline; word-break: break-all; }

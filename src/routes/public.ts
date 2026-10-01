@@ -7,6 +7,11 @@ import { accessProblem, getWorkspaceByPublicId } from "../models.js";
 import { decrypt, hmacHex, rateLimited, safeEqual } from "../security.js";
 import { html, raw } from "../views/html.js";
 import { ICON_LINKS } from "../views/layout.js";
+import QRCode from "qrcode";
+import { DateTime } from "luxon";
+import { inr, mapsLink, ownerPhones } from "../catalog.js";
+import { Booking, getBooking, markPaid, checkPayment, payToken, whenText } from "../bookings.js";
+import { upiUri, verifyCallbackSignature, verifyWebhookSignature } from "../payments.js";
 
 export const publicRoutes = Router();
 
@@ -37,7 +42,7 @@ publicRoutes.get("/w/:id", async (req, res) => {
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Book · ${ws.business_name}</title>
 ${ICON_LINKS}
-<link rel="stylesheet" href="/static/widget.css?v=3">
+<link rel="stylesheet" href="/static/widget.css?v=4">
 <style>:root{--accent:${/^#[0-9a-fA-F]{6}$/.test(ws.widget_color) ? ws.widget_color : "#16a34a"}}</style>
 </head><body>
 <div class="w">
@@ -47,7 +52,7 @@ ${ICON_LINKS}
   <footer>Powered by ${env.appName}</footer>
 </div>
 <script>window.WIDGET_ID=${raw(JSON.stringify(ws.public_id).replace(/</g, "\\u003c"))};</script>
-<script src="/static/widget-chat.js?v=3"></script>
+<script src="/static/widget-chat.js?v=4"></script>
 </body></html>`.toString()
   );
 });
@@ -174,7 +179,11 @@ async function handleWhatsApp(ws: Workspace, phone: string, g: { ids: string[]; 
     out = "Conversation reset. How can I help?";
   } else {
     try {
-      out = await reply(ws, "whatsapp", phone, text, { trustedPhone: phone, contactName: g.name });
+      // The owner's own number manages the business; "/customer …" lets them try the customer side.
+      const isOwner = ownerPhones(ws).includes(phone);
+      const asCustomer = isOwner && /^\/customer\b/i.test(text);
+      const msg = asCustomer ? text.replace(/^\/customer\b\s*/i, "") || "Hi" : text;
+      out = await reply(ws, "whatsapp", phone, msg, { trustedPhone: phone, contactName: g.name, asOwner: isOwner && !asCustomer });
     } catch (e: any) {
       console.error(`[whatsapp ${ws.public_id}]`, e);
       await logActivity(ws.id, "error", "whatsapp", e.message);
@@ -189,3 +198,122 @@ async function handleWhatsApp(ws: Workspace, phone: string, g: { ids: string[]; 
   }
 }
 
+
+
+// ---------- Razorpay ----------
+
+publicRoutes.post("/webhooks/razorpay/:id", express.raw({ type: "*/*", limit: "1mb" }), async (req, res) => {
+  const ws = await getWorkspaceByPublicId(req.params.id);
+  if (!ws) return res.sendStatus(404);
+  const secret = decrypt(ws.razorpay_webhook_secret_enc);
+  const raw = req.body as Buffer;
+  if (!secret || !verifyWebhookSignature(secret, raw, String(req.header("X-Razorpay-Signature") || ""))) return res.sendStatus(401);
+  let ev: any;
+  try { ev = JSON.parse(raw.toString("utf8")); } catch { return res.sendStatus(400); }
+  // Razorpay retries on non-2xx, and may send the same event twice: everything below is idempotent.
+  const eventId = String(req.header("X-Razorpay-Event-Id") || "");
+  if (eventId && !(await firstTime(`rzp:${ws.id}:${eventId}`))) return res.sendStatus(200);
+  res.sendStatus(200);
+  try {
+    const link = ev?.payload?.payment_link?.entity;
+    if (!link) return;
+    const b = (await getBooking(ws, link.reference_id)) ?? (await db.get<Booking>("SELECT * FROM bookings WHERE workspace_id=? AND payment_link_id=?", ws.id, link.id));
+    if (!b || b.payment_link_id !== link.id) return;
+    if (ev.event === "payment_link.paid") await markPaid(ws, b, ev?.payload?.payment?.entity?.id ?? null, "webhook");
+    else if (ev.event === "payment_link.expired" || ev.event === "payment_link.cancelled") await checkPayment(ws, b);
+  } catch (e: any) {
+    console.error(`[razorpay ${ws.public_id}]`, e?.message);
+    await logActivity(ws.id, "error", "payment", `Webhook: ${e?.message}`);
+  }
+});
+
+// ---------- Payment / booking status page (link sent to customers) ----------
+
+function payShell(ws: Workspace, title: string, body: string) {
+  const color = /^#[0-9a-fA-F]{6}$/.test(ws.widget_color) ? ws.widget_color : "#0a84ff";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title} · ${ws.business_name.replace(/</g, "&lt;")}</title>${ICON_LINKS.value}<link rel="stylesheet" href="/static/pay.css?v=1"><style>:root{--accent:${color}}</style></head>
+<body><main class="pay">${body}</main><script src="/static/pay.js?v=1"></script></body></html>`;
+}
+
+function gcalLink(ws: Workspace, b: Booking) {
+  const f = (iso: string) => DateTime.fromISO(iso).toUTC().toFormat("yyyyLLdd'T'HHmmss'Z'");
+  const p = new URLSearchParams({ action: "TEMPLATE", text: `${b.service_name} · ${ws.business_name}`, dates: `${f(b.start_at)}/${f(b.end_at)}`, details: `Booking ${b.ref}${b.meet_link ? `\nJoin: ${b.meet_link}` : ""}`, location: b.mode === "online" ? b.meet_link || "" : ws.address });
+  return `https://calendar.google.com/calendar/render?${p}`;
+}
+
+async function payView(ws: Workspace, b: Booking) {
+  const first = (b.customer_name || "").split(/\s+/)[0] || "";
+  const when = whenText(ws, b.start_at);
+  const esc = (x: string) => html`${x}`.toString();
+  const top = `<div class="biz"><span class="av">${esc((ws.business_name || "B").charAt(0).toUpperCase())}</span><b>${esc(ws.business_name)}</b></div>`;
+  const summary = `<div class="sum"><div><span>Service</span><b>${esc(b.service_name)}</b></div><div><span>When</span><b>${esc(when)}</b></div><div><span>${b.mode === "online" ? "Where" : "Where"}</span><b>${b.mode === "online" ? "Online" : esc(ws.address || "In person")}</b></div>${b.amount ? `<div><span>Amount</span><b>${inr(b.amount)}</b></div>` : ""}<div><span>Ref</span><b class="mono">${b.ref}</b></div></div>`;
+  if (b.status === "confirmed" && b.pay_status !== "pending_manual") {
+    const map = b.mode === "offline" ? mapsLink(ws) : "";
+    return payShell(ws, "Booked", `${top}<div class="state ok"><span class="big">✓</span><h1>You're booked${first ? `, ${esc(first)}` : ""}!</h1><p>${b.pay_status === "paid" ? `Payment of ${inr(b.amount)} received. ` : ""}See you on ${esc(when)}.</p></div>${summary}
+      <div class="actions">${b.meet_link ? `<a class="btn" href="${esc(b.meet_link)}" target="_blank" rel="noopener">Join online session</a>` : ""}${map ? `<a class="btn" href="${esc(map)}" target="_blank" rel="noopener">Open in Google Maps</a>` : ""}<a class="btn ghost" href="${esc(gcalLink(ws, b))}" target="_blank" rel="noopener">Add to Google Calendar</a></div>
+      <p class="fine">${b.customer_email ? `A calendar invite was sent to ${esc(b.customer_email)} if the business has invites on. ` : ""}To change or cancel, just message ${esc(ws.business_name)}.</p>`);
+  }
+  if (b.pay_status === "pending_manual" && b.status === "confirmed") {
+    const uri = upiUri(ws, b.amount, b.ref);
+    const qr = await QRCode.toDataURL(uri, { margin: 1, width: 260 });
+    return payShell(ws, "Pay by UPI", `${top}<div class="state"><h1>Pay ${inr(b.amount)} by UPI</h1><p>Your slot is booked. Pay now to confirm it.</p></div>
+      <img class="qr" src="${qr}" alt="UPI QR code for ${inr(b.amount)}"><p class="upi mono">${esc(ws.upi_id)}</p>
+      <div class="actions"><a class="btn" href="${esc(uri)}">Pay with a UPI app</a></div>${summary}
+      <p class="fine">After paying, send the payment screenshot in your chat with ${esc(ws.business_name)}. They'll confirm it shortly.</p>`);
+  }
+  if (b.status === "held" && b.pay_status === "awaiting") {
+    const left = Math.max(0, (b.hold_expires_at ?? 0) - Date.now());
+    return payShell(ws, "Complete payment", `${top}<div class="state"><h1>Pay ${inr(b.amount)} to confirm</h1><p>Your slot is held for <b data-countdown="${b.hold_expires_at}">${Math.ceil(left / 60000)} min</b>.</p></div>${summary}
+      <div class="actions"><a class="btn" href="${esc(b.pay_url || "#")}">Pay ${inr(b.amount)} securely</a></div>
+      <p class="fine" data-poll="/pay/${ws.public_id}/${b.ref}/${payToken(ws, b.ref)}/status">This page updates by itself once the payment goes through.</p>`);
+  }
+  if (b.status === "paid_unbooked") {
+    return payShell(ws, "Payment received", `${top}<div class="state ok"><span class="big">✓</span><h1>Payment received</h1><p>Sorry, the time you picked was taken while the payment went through. Message ${esc(ws.business_name)} with another day or time: your payment of ${inr(b.amount)} covers it.</p></div>${summary}`);
+  }
+  const why = b.pay_status === "expired" ? "The payment link expired, so the slot was released. If money left your account, your bank normally returns it within 5–7 working days." : "This booking was cancelled.";
+  return payShell(ws, "Not active", `${top}<div class="state bad"><h1>Not booked</h1><p>${why}</p></div>${summary}<p class="fine">Message ${esc(ws.business_name)} to book again.</p>`);
+}
+
+publicRoutes.get("/pay/:id/:ref/:token", async (req, res) => {
+  if (rateLimited(`paypage:${req.ip}`, 60, 60_000)) return res.status(429).send("Too many requests. Wait a minute.");
+  const ws = await getWorkspaceByPublicId(req.params.id);
+  let b = ws ? await getBooking(ws, req.params.ref) : undefined;
+  if (!ws || !b || !safeEqual(req.params.token, payToken(ws, b.ref))) return res.status(404).send("Booking not found.");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  const q = req.query as Record<string, string>;
+  // Coming back from Razorpay: trust it only if the signature checks out, then confirm.
+  if (q.razorpay_payment_link_id && q.razorpay_payment_link_id === b.payment_link_id) {
+    if (verifyCallbackSignature(ws, q) && q.razorpay_payment_link_status === "paid") {
+      await markPaid(ws, b, q.razorpay_payment_id || null, "redirect").catch((e) => console.error("markPaid", e?.message));
+    } else if (b.status === "held") {
+      await checkPayment(ws, b).catch(() => undefined);
+    }
+    b = (await getBooking(ws, b.ref))!;
+  }
+  res.send(await payView(ws, b));
+});
+
+publicRoutes.get("/pay/:id/:ref/:token/status", async (req, res) => {
+  const ws = await getWorkspaceByPublicId(req.params.id);
+  const b = ws ? await getBooking(ws, req.params.ref) : undefined;
+  if (!ws || !b || !safeEqual(req.params.token, payToken(ws, b.ref))) return res.status(404).json({});
+  if (rateLimited(`paystatus:${req.ip}`, 60, 60_000)) return res.status(429).json({});
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ status: b.status, pay_status: b.pay_status });
+});
+
+// ---------- Privacy policy (needed for Google sign-in review) ----------
+
+publicRoutes.get("/privacy", (_req, res) => {
+  const name = env.appName.replace(/</g, "&lt;");
+  res.send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Privacy · ${name}</title>${ICON_LINKS.value}<link rel="stylesheet" href="/static/pay.css?v=1"><style>:root{--accent:#0a84ff}.pay{max-width:720px}h2{font-size:18px;margin-top:26px}p,li{color:var(--text-2)}</style></head><body><main class="pay">
+<h1>Privacy policy</h1><p>${name} is a booking assistant for small businesses. This page explains what we store and why.</p>
+<h2>Google Calendar</h2><p>When a business signs in with Google, we only request permission to see free/busy times, list calendars they can edit, and create, change or remove the booking events we make. We use this solely to offer free slots and to add bookings (with an email invite to the customer and, for online sessions, a Google Meet link). We never read the content of other events, emails or files, never sell Google data, and don't use it for advertising or to train AI models. Our use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements. A business can disconnect at any time from its dashboard or at myaccount.google.com/permissions.</p>
+<h2>What we store</h2><ul><li>Business account details and settings entered by the business.</li><li>Conversation history with customers (kept up to 30 days) and booking records (name, phone, optional email, service, time, payment status).</li><li>Access keys the business provides (Claude, Google, Kapso, Razorpay), encrypted.</li></ul>
+<h2>Who processes data</h2><p>Messages are answered by Anthropic's Claude using the business's own account; WhatsApp messages pass through Kapso and Meta; online payments are handled by Razorpay. Card and bank details never reach us.</p>
+<h2>Deleting data</h2><p>Businesses can remove files, bookings and connections themselves, or ask their account manager to delete the whole account, which removes all its data.</p>
+<h2>Contact</h2><p>Questions: contact the business you booked with, or the ${name} team.</p>
+</main></body></html>`);
+});

@@ -253,7 +253,8 @@
       var t; try { t = JSON.parse(b.getAttribute("data-template")); } catch (e) { return; }
       var f = doc.querySelector('form[action="/setup/business"]'); if (!f) return;
       var name = f.querySelector("[name=business_name]");
-      f.querySelector("[name=services]").value = t.services;
+      if (window.appSetServices) window.appSetServices(t.services.split(",").map(function (x) { return x.trim(); }).filter(Boolean), t.mode || "offline");
+      var bt = f.querySelector("[data-business-type]"); if (bt) bt.value = t.label;
       f.querySelector("[name=open_hour]").value = String(t.open);
       f.querySelector("[name=close_hour]").value = String(t.close);
       f.querySelector("[name=slot_minutes]").value = String(t.slot);
@@ -426,6 +427,108 @@
   }
 
   // ---------------------------------------------------------------- test chat
+  // ---------------------------------------------------------------- services editor (v7)
+  var svcEd = doc.querySelector("[data-svc-editor]");
+  if (svcEd) {
+    var list = svcEd.querySelector("[data-svc-list]"), tpl = svcEd.querySelector("[data-svc-template]");
+    function wire(row) {
+      var kind = row.querySelector("[data-svc-kind]"), price = row.querySelector("[data-svc-price]");
+      kind.addEventListener("change", function () {
+        price.hidden = kind.value !== "paid";
+        if (kind.value === "paid") setTimeout(function () { price.querySelector("input").focus(); }, 30);
+      });
+      row.querySelector("[data-svc-more]").addEventListener("click", function () {
+        var d = row.querySelector("[data-svc-details]"); d.hidden = !d.hidden; row.classList.toggle("open", !d.hidden);
+        if (!d.hidden) d.querySelector("textarea").focus();
+      });
+      row.querySelector("[data-svc-remove]").addEventListener("click", function () {
+        if (list.children.length <= 1) { row.querySelectorAll("input[type=text], textarea").forEach(function (i) { i.value = ""; }); return; }
+        row.classList.add("out"); setTimeout(function () { row.remove(); }, 200);
+      });
+      row.querySelector(".svc-name").addEventListener("keydown", function (e) {
+        if (e.key === "Enter") { e.preventDefault(); addRow("", null, true); }
+      });
+      if (row.querySelector("[data-svc-details] textarea").value.trim()) { row.querySelector("[data-svc-details]").hidden = false; row.classList.add("open"); }
+    }
+    function addRow(name, mode, focus) {
+      var row = tpl.content.firstElementChild.cloneNode(true);
+      row.querySelector(".svc-name").value = name || "";
+      if (mode) row.querySelector(".svc-mode").value = mode;
+      list.appendChild(row); wire(row);
+      if (focus) row.querySelector(".svc-name").focus();
+      return row;
+    }
+    list.querySelectorAll("[data-svc-row]").forEach(wire);
+    svcEd.querySelector("[data-svc-add]").addEventListener("click", function () { addRow("", null, true); });
+    // Templates replace the list only if it's still empty or untouched template rows.
+    window.appSetServices = function (names, mode) {
+      var typed = Array.prototype.some.call(list.querySelectorAll("[data-svc-row]"), function (r) {
+        return !r.hasAttribute("data-from-template") && (r.querySelector(".svc-name").value.trim() || r.querySelector("[name=svc_price]").value.trim() || r.querySelector("textarea").value.trim());
+      });
+      if (typed) { toast("info", "Your own services were kept. Remove them first if you want the template list.", 5000); return; }
+      list.innerHTML = "";
+      names.forEach(function (n) { addRow(n, mode, false).setAttribute("data-from-template", ""); });
+    };
+    list.addEventListener("input", function (e) { var r = e.target.closest("[data-svc-row]"); if (r) r.removeAttribute("data-from-template"); });
+  }
+
+  // Knowledge files: show what was picked.
+  doc.querySelectorAll("[data-filedrop]").forEach(function (dz) {
+    var input = dz.querySelector("input[type=file]"), title = dz.querySelector("[data-dz-title]"), sub = dz.querySelector("[data-dz-sub]");
+    ["dragenter", "dragover"].forEach(function (ev) { dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.add("over"); }); });
+    ["dragleave", "drop"].forEach(function (ev) { dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.remove("over"); }); });
+    dz.addEventListener("drop", function (e) { if (e.dataTransfer && e.dataTransfer.files.length) { input.files = e.dataTransfer.files; show(); } });
+    input.addEventListener("change", show);
+    function show() {
+      var n = input.files.length; if (!n) return;
+      dz.classList.add("good");
+      title.textContent = "✓ " + (n === 1 ? input.files[0].name : n + " files");
+      sub.textContent = Array.prototype.map.call(input.files, function (f) { return f.name; }).join(", ").slice(0, 120) + " · click Upload";
+    }
+  });
+
+  // Payments: live price preview with the online discount.
+  var disc = doc.querySelector("[data-discount]"), pp = doc.querySelector("[data-price-preview]");
+  if (disc && pp) disc.addEventListener("input", function () {
+    var base = +pp.getAttribute("data-list"), d = Math.max(0, Math.min(90, +disc.value || 0));
+    pp.querySelector("[data-online-price]").textContent = "₹" + Math.round(base * (1 - d / 100)).toLocaleString("en-IN") + " online";
+  });
+
+  // ---------------------------------------------------------------- booking forms: live free-slot picker (v8)
+  doc.querySelectorAll("[data-slot-form]").forEach(function (form) {
+    var date = form.querySelector("[data-slot-date]"), box = form.querySelector("[data-slot-pick]"), time = form.querySelector("[data-slot-time]");
+    var svc = form.querySelector("[data-slot-service]"), ignore = form.getAttribute("data-ignore") || "";
+    var modeF = form.querySelector("[data-mode-field]"), paidF = form.querySelector("[data-paid-field]");
+    function fmt(hm) { var p = hm.split(":"), h = +p[0], m = +p[1]; return (h % 12 || 12) + (m ? ":" + p[1] : "") + (h < 12 ? " am" : " pm"); }
+    function svcFields() {
+      if (!svc) return;
+      var o = svc.options[svc.selectedIndex];
+      if (modeF) { modeF.hidden = o.getAttribute("data-mode") !== "both"; if (o.getAttribute("data-mode") !== "both") modeF.querySelector("select").value = o.getAttribute("data-mode"); }
+      if (paidF) paidF.hidden = !(+o.getAttribute("data-price") > 0);
+    }
+    var seq = 0;
+    function load() {
+      time.value = ""; if (!date.value) return;
+      var my = ++seq;
+      box.innerHTML = '<span class="muted">Checking free times…</span>'; box.classList.add("loading-slots");
+      var q = "?date=" + encodeURIComponent(date.value) + (svc ? "&service=" + encodeURIComponent(svc.value) : "") + (ignore ? "&ignore=" + encodeURIComponent(ignore) : "");
+      fetch("/bookings/slots" + q, { credentials: "same-origin" }).then(function (r) { return r.json(); }).then(function (j) {
+        if (my !== seq) return;
+        box.classList.remove("loading-slots"); box.innerHTML = "";
+        if (!j.slots || !j.slots.length) { var n = doc.createElement("span"); n.className = "muted"; n.textContent = j.note || "No free times that day."; box.appendChild(n); return; }
+        j.slots.forEach(function (s, i) {
+          var b = doc.createElement("button"); b.type = "button"; b.className = "chip"; b.textContent = fmt(s); b.style.animationDelay = Math.min(i, 20) * 15 + "ms";
+          b.addEventListener("click", function () { time.value = s; box.querySelectorAll(".chip").forEach(function (x) { x.classList.toggle("on", x === b); }); });
+          box.appendChild(b);
+        });
+      }).catch(function () { box.innerHTML = '<span class="muted">Couldn\'t load times. Try again.</span>'; });
+    }
+    date.addEventListener("change", load);
+    if (svc) svc.addEventListener("change", function () { svcFields(); load(); });
+    svcFields(); load();
+    form.addEventListener("submit", function (e) { if (!time.value) { e.preventDefault(); e.stopImmediatePropagation(); toast("err", "Pick one of the free times first."); } }, true);
+  });
+
   // ---------------------------------------------------------------- admin helpers (v6)
   // Show / hide a panel: <button data-open="id"> and <button data-close="id">.
   doc.addEventListener("click", function (e) {
@@ -566,8 +669,18 @@
   if (!chat) return;
   var msgs = chat.querySelector(".msgs"), form = chat.querySelector("form"), input = form.querySelector("input"), sendBtn = form.querySelector("button");
   var csrf = chat.getAttribute("data-csrf"), waiting = false;
+  function linkify(el, text) {
+    el.textContent = "";
+    var re = /https?:\/\/[^\s<>"')]+[^\s<>"').,!?]/g, last = 0, m;
+    while ((m = re.exec(text))) {
+      if (m.index > last) el.appendChild(doc.createTextNode(text.slice(last, m.index)));
+      var a = doc.createElement("a"); a.href = m[0]; a.textContent = m[0].length > 48 ? m[0].slice(0, 45) + "…" : m[0];
+      a.target = "_blank"; a.rel = "noopener noreferrer"; el.appendChild(a); last = m.index + m[0].length;
+    }
+    if (last < text.length) el.appendChild(doc.createTextNode(text.slice(last)));
+  }
   function add(cls, text) {
-    var d = doc.createElement("div"); d.className = "m " + cls; d.textContent = text; msgs.appendChild(d);
+    var d = doc.createElement("div"); d.className = "m " + cls; linkify(d, text); msgs.appendChild(d);
     msgs.scrollTop = msgs.scrollHeight; return d;
   }
   function typing() {
@@ -578,7 +691,7 @@
     if (!text || waiting) return;
     waiting = true; add("u", text); input.value = ""; sendBtn.classList.add("loading");
     var t = typing();
-    fetch(chat.getAttribute("data-endpoint"), { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf }, body: JSON.stringify({ text: text }) })
+    fetch(chat.getAttribute("data-endpoint"), { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf }, body: JSON.stringify({ text: text, as: chat.getAttribute("data-as") || "customer" }) })
       .then(function (r) { return r.json(); })
       .then(function (j) {
         t.remove(); add("b", j.reply || j.error || "No reply"); if (j.error) toast("err", j.error);
@@ -595,9 +708,19 @@
   var reset = doc.querySelector("[data-chat-reset]");
   if (reset) reset.addEventListener("click", function () {
     reset.classList.add("loading");
-    fetch(chat.getAttribute("data-reset"), { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf }, body: "{}" })
+    fetch(chat.getAttribute("data-reset"), { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf }, body: JSON.stringify({ as: chat.getAttribute("data-as") || "customer" }) })
       .then(function () { msgs.innerHTML = ""; add("b", "Started a new conversation."); toast("ok", "Conversation reset"); })
       .finally(function () { reset.classList.remove("loading"); });
+  });
+  doc.querySelectorAll("[data-chat-as]").forEach(function (r) {
+    r.addEventListener("change", function () {
+      var owner = r.value === "owner" && r.checked;
+      chat.setAttribute("data-as", owner ? "owner" : "customer");
+      var hint = doc.querySelector("[data-owner-hint]"), sug = doc.querySelector(".suggest");
+      if (hint) hint.hidden = !owner; if (sug) sug.hidden = owner;
+      msgs.innerHTML = "";
+      add("b", owner ? "Hi! You're the owner here. Ask me to change services, prices, offers, holidays or see bookings." : "Hi! I'm your booking assistant. Try a suggestion above, or type anything.");
+    });
   });
   add("b", "Hi! I'm your booking assistant. Try a suggestion above, or type anything.");
 })();

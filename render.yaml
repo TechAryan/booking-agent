@@ -26,3 +26,7 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
+      - key: GOOGLE_CLIENT_ID    # "Sign in with Google" (README → Google sign-in)
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false

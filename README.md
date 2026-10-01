@@ -80,6 +80,30 @@ Without Turso, `bash deploy/railway-setup.sh you@example.com` does a fresh insta
 **Another admin:** create an account with the role "Admin".
 **Admin locked out:** `npm run create-admin -- you@example.com` prints a new temporary password.
 
+## Google sign-in (one-time, for the whole product)
+
+Lets every business connect its calendar with one click. With it, customers get an email calendar invite and online sessions get a Google Meet link. Without it, businesses can still use the old key-file method (no invites or Meet links).
+
+1. [Google Cloud console](https://console.cloud.google.com) → pick or create a project → **APIs & Services → Library → Google Calendar API → Enable**.
+2. **Google Auth Platform → Branding**: app name, support email, app home page `https://<your app>/`, privacy policy `https://<your app>/privacy`.
+3. **Audience**: *External*, then **Publish app** (so sign-ins don't expire after 7 days). Until Google verifies the app, users see "Google hasn't verified this app" and there's a 100-user cap; the Google step explains how to click through.
+4. **Data access → Add scopes**: `calendar.events`, `calendar.freebusy`, `calendar.calendarlist.readonly` (plus `openid`, `email`).
+5. **Clients → Create client → Web application**. Authorized redirect URI: `https://<your app>/setup/google/callback` (add your tunnel URL too for local testing).
+6. Put the Client ID and Client Secret into `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (Render → Environment, and your local `.env`).
+7. Later, to remove the warning: submit the app for verification in Google Auth Platform → Verification Center. Google needs a domain you own (not onrender.com).
+
+## Payments
+
+- Each business connects its **own Razorpay** account (Payments page: Key ID + Key Secret, then add the webhook URL and secret shown there). Money goes straight to them.
+- Flow: the assistant quotes "pay at venue" vs "pay online (with the online discount)". Online = the slot is held for 20 minutes and a payment link is sent. It confirms automatically by webhook, by the customer's redirect back, or by a check every minute. If the link expires, the slot is released and the customer is told. If a payment lands after its slot was taken, it's kept as credit and the customer picks a new time.
+- Without Razorpay, **UPI** works as a fallback: the customer gets a QR/UPI page, the booking shows "payment pending", and the owner confirms on the Bookings page or by WhatsApp.
+- **Paid bookings can't be cancelled** (by the customer, the owner chat or the Bookings page): they can only be moved. Free and not-yet-paid bookings can be cancelled. Rescheduling is always allowed.
+- Walk-in or phone bookings: **Bookings → Add booking** (pick a free time, mark "already paid" if they paid in person). **Export CSV** downloads the list.
+
+## Owner on WhatsApp
+
+Add owner numbers on the WhatsApp page. Messages from those numbers go to a control assistant that can list/add/edit/delete services and prices, set the online discount, add offers (for everyone, one service, or one customer, with dates), add holidays, change business details and instructions, list bookings, confirm UPI payments and cancel bookings. Start a message with `/customer` to try the customer side. Owners also get alerts for new bookings, payments and cancellations (WhatsApp only allows this within 24 hours of the owner's last message). The Test page has a "Chat as the owner" switch to try it without WhatsApp.
+
 ## What the setup wizard checks
 
 | Step | What the owner does | What we verify before saving |

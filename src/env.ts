@@ -29,5 +29,10 @@ export const env = {
   bootstrapAdminPassword: process.env.ADMIN_PASSWORD || "",
   // Overridable for tests.
   kapsoApiBase: (process.env.KAPSO_API_BASE || "https://api.kapso.ai").replace(/\/+$/, ""),
+  // "Sign in with Google" (one OAuth app for the whole product). Empty = only the key-file method is offered.
+  googleClientId: process.env.GOOGLE_CLIENT_ID || "",
+  googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+  // Overridable for tests.
+  razorpayApiBase: (process.env.RAZORPAY_API_BASE || "https://api.razorpay.com").replace(/\/+$/, ""),
   defaultModel: process.env.CLAUDE_MODEL || "claude-sonnet-5-5",
 };

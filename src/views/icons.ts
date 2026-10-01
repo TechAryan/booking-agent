@@ -22,6 +22,12 @@ const paths: Record<string, string> = {
   image: '<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   send: '<path d="M21 3L10 14"/><path d="M21 3l-7 18-4-7-7-4z"/>',
+  profile: '<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="11" r="2.5"/><path d="M5.5 17a3.5 3.5 0 0 1 7 0M14 9h4M14 13h4"/>',
+  holiday: '<path d="M12 3v2M12 19v2M4.2 7.5l1.7 1M18.1 15.5l1.7 1M3 12h2M19 12h2M4.2 16.5l1.7-1M18.1 8.5l1.7-1"/><circle cx="12" cy="12" r="4"/>',
+  book: '<path d="M8 3v3M16 3v3"/><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 14h3M8 17h6"/>',
+  pin: '<path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>',
   trash: '<path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13M9 7V4h6v3"/>',
 };
 
@@ -29,7 +35,7 @@ const paths: Record<string, string> = {
 export const tileColor: Record<string, string> = {
   business: "#007aff", claude: "#d97757", calendar: "#ff3b30", test: "#5856d6",
   widget: "#32ade6", whatsapp: "#34c759", users: "#ff9500", check: "#34c759", clock: "#ff9500", bolt: "#af52de",
-  lock: "#8e8e93", inbox: "#8e8e93", key: "#d97757", wallet: "#34c759", bell: "#ff9500", image: "#5856d6", send: "#34c759",
+  lock: "#8e8e93", inbox: "#8e8e93", key: "#d97757", profile: "#5ac8fa", holiday: "#ffcc00", book: "#ff2d55", pin: "#ff3b30", globe: "#007aff", file: "#8e8e93", wallet: "#34c759", bell: "#ff9500", image: "#5856d6", send: "#34c759",
 };
 
 export function icon(name: string, size = 18): Safe {

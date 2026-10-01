@@ -197,6 +197,90 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 CREATE INDEX IF NOT EXISTS payments_user ON payments(user_id, paid_on DESC);
 
+-- What the business offers. price 0 (or empty) = free.
+CREATE TABLE IF NOT EXISTS services (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  details TEXT NOT NULL DEFAULT '',
+  price REAL NOT NULL DEFAULT 0,             -- rupees
+  mode TEXT NOT NULL DEFAULT 'offline' CHECK (mode IN ('online','offline','both')),
+  duration_minutes INTEGER,                  -- NULL = the business's slot length
+  sort INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS services_ws ON services(workspace_id, sort);
+
+-- Days the business is closed.
+CREATE TABLE IF NOT EXISTS holidays (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  date TEXT NOT NULL,                        -- YYYY-MM-DD
+  end_date TEXT,                             -- inclusive, NULL = one day
+  label TEXT NOT NULL DEFAULT 'Holiday',
+  source TEXT NOT NULL DEFAULT 'manual',
+  UNIQUE (workspace_id, date, label)
+);
+
+-- Extra knowledge about the business: uploaded files, website import, notes.
+CREATE TABLE IF NOT EXISTS knowledge (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,                        -- file | website | note
+  title TEXT NOT NULL DEFAULT '',
+  source_url TEXT,
+  content TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS knowledge_ws ON knowledge(workspace_id, id);
+
+-- Discounts the owner sets (e.g. over WhatsApp): for everyone, one service, or one customer, for a time window.
+CREATE TABLE IF NOT EXISTS offers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  label TEXT NOT NULL DEFAULT '',
+  percent REAL NOT NULL,
+  service_id INTEGER,                        -- NULL = all services
+  customer_phone TEXT,                       -- digits; NULL = everyone
+  starts_on TEXT,                            -- YYYY-MM-DD, NULL = now
+  ends_on TEXT,                              -- YYYY-MM-DD inclusive, NULL = no end
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Every booking we make, including ones waiting for payment.
+CREATE TABLE IF NOT EXISTS bookings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  ref TEXT NOT NULL UNIQUE,                  -- short code shown to customers, e.g. BK-7Q2X
+  owner TEXT NOT NULL,                       -- wa:<phone> or <channel>:<session>
+  channel TEXT NOT NULL,
+  customer_name TEXT NOT NULL DEFAULT '',
+  customer_phone TEXT NOT NULL DEFAULT '',
+  customer_email TEXT NOT NULL DEFAULT '',
+  service_id INTEGER,
+  service_name TEXT NOT NULL DEFAULT '',
+  start_at TEXT NOT NULL,                    -- ISO with offset
+  end_at TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'offline',      -- online | offline
+  list_price REAL NOT NULL DEFAULT 0,
+  amount REAL NOT NULL DEFAULT 0,            -- what the customer pays
+  pay_method TEXT NOT NULL DEFAULT 'free',   -- free | online | venue | upi
+  pay_status TEXT NOT NULL DEFAULT 'none',   -- none | awaiting | paid | expired | failed | refund_due | pending_manual
+  status TEXT NOT NULL DEFAULT 'confirmed',  -- held | confirmed | cancelled | paid_unbooked
+  hold_expires_at INTEGER,                   -- ms; only while status = held
+  payment_link_id TEXT,
+  pay_url TEXT,
+  payment_id TEXT,
+  event_id TEXT,
+  meet_link TEXT,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS bookings_ws ON bookings(workspace_id, start_at);
+CREATE INDEX IF NOT EXISTS bookings_owner ON bookings(workspace_id, owner);
+
 CREATE TABLE IF NOT EXISTS seen_messages (
   id TEXT PRIMARY KEY,
   created_at INTEGER NOT NULL
@@ -221,6 +305,29 @@ const MIGRATIONS: [string, string, string][] = [
   ["users", "payment_status", "TEXT NOT NULL DEFAULT 'pending'"], // paid | pending | trial
   ["users", "phone", "TEXT NOT NULL DEFAULT ''"],
   ["workspaces", "shared_key_id", "INTEGER"],                    // a claude_keys row we provide, instead of their own key
+  // Business profile
+  ["workspaces", "business_type", "TEXT NOT NULL DEFAULT ''"],
+  ["workspaces", "contact_email", "TEXT NOT NULL DEFAULT ''"],
+  ["workspaces", "contact_phone", "TEXT NOT NULL DEFAULT ''"],
+  ["workspaces", "address", "TEXT NOT NULL DEFAULT ''"],
+  ["workspaces", "maps_url", "TEXT NOT NULL DEFAULT ''"],
+  ["workspaces", "website", "TEXT NOT NULL DEFAULT ''"],
+  ["workspaces", "socials", "TEXT NOT NULL DEFAULT '{}'"],        // JSON {instagram, facebook, youtube, ...}
+  ["workspaces", "meeting_link", "TEXT NOT NULL DEFAULT ''"],     // fixed link for online sessions if no Google Meet
+  ["workspaces", "services_migrated", "INTEGER NOT NULL DEFAULT 0"],
+  // Payments
+  ["workspaces", "online_discount_pct", "REAL NOT NULL DEFAULT 0"],
+  ["workspaces", "pay_at_venue", "INTEGER NOT NULL DEFAULT 1"],   // customers may pay offline
+  ["workspaces", "razorpay_key_id", "TEXT NOT NULL DEFAULT ''"],
+  ["workspaces", "razorpay_secret_enc", "TEXT"],
+  ["workspaces", "razorpay_webhook_secret_enc", "TEXT"],
+  ["workspaces", "upi_id", "TEXT NOT NULL DEFAULT ''"],
+  ["workspaces", "upi_name", "TEXT NOT NULL DEFAULT ''"],
+  // Owner control over WhatsApp
+  ["workspaces", "owner_phones", "TEXT NOT NULL DEFAULT ''"],     // comma separated digits
+  // Google sign-in (OAuth) instead of a service-account key
+  ["workspaces", "google_refresh_enc", "TEXT"],
+  ["workspaces", "google_account_email", "TEXT NOT NULL DEFAULT ''"],
 ];
 async function migrate() {
   for (const [table, col, def] of MIGRATIONS) {
@@ -281,6 +388,25 @@ export interface Workspace {
   kapso_webhook_secret_enc: string | null;
   whatsapp_enabled: number;
   shared_key_id: number | null;
+  business_type: string;
+  contact_email: string;
+  contact_phone: string;
+  address: string;
+  maps_url: string;
+  website: string;
+  socials: string;
+  meeting_link: string;
+  services_migrated: number;
+  online_discount_pct: number;
+  pay_at_venue: number;
+  razorpay_key_id: string;
+  razorpay_secret_enc: string | null;
+  razorpay_webhook_secret_enc: string | null;
+  upi_id: string;
+  upi_name: string;
+  owner_phones: string;
+  google_refresh_enc: string | null;
+  google_account_email: string;
   updated_at: string;
 }
 

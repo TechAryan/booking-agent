@@ -21,7 +21,7 @@ export function page(
 <meta name="theme-color" content="${theme === "light" ? "#f5f5f7" : "#000000"}">
 <title>${opts.title} · ${env.appName}</title>
 ${ICON_LINKS}
-<link rel="stylesheet" href="/static/app.css?v=10">
+<link rel="stylesheet" href="/static/app.css?v=13">
 <script>document.documentElement.classList.add("js")</script>
 </head>
 <body class="${u ? "app" : "auth"}">
@@ -33,6 +33,7 @@ ${u ? "" : html`<div class="mesh" aria-hidden="true"><i></i><i></i><i></i></div>
   ${u
     ? html`<nav class="tabs" aria-label="Main">
         ${tab("/", "Dashboard", path === "/" || path.startsWith("/setup"))}
+        ${tab("/bookings", "Bookings", path.startsWith("/bookings"))}
         ${u.role === "admin" ? tab("/admin", "Admin", path.startsWith("/admin")) : ""}
         ${tab("/account/password", "Account", path.startsWith("/account"))}
         <form method="post" action="/logout" class="inline" data-silent>
@@ -50,7 +51,7 @@ ${u ? "" : html`<div class="mesh" aria-hidden="true"><i></i><i></i><i></i></div>
   ${opts.body}
 </main>
 <div class="toasts" id="toasts" aria-live="polite"></div>
-<script src="/static/app.js?v=10"></script>
+<script src="/static/app.js?v=13"></script>
 </body>
 </html>`.toString();
 }

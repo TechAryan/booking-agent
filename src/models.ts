@@ -69,7 +69,7 @@ export async function countActiveAdmins(): Promise<number> {
 export async function deleteUser(userId: number) {
   const ws = await db.get<{ id: number }>("SELECT id FROM workspaces WHERE user_id = ?", userId);
   if (ws) {
-    await db.run("DELETE FROM activity WHERE workspace_id = ?", ws.id);
+    for (const t of ["activity", "services", "holidays", "knowledge", "offers", "bookings"]) await db.run(`DELETE FROM ${t} WHERE workspace_id = ?`, ws.id);
     await db.run("DELETE FROM conversations WHERE workspace_id = ?", ws.id);
     await db.run("DELETE FROM workspaces WHERE id = ?", ws.id);
   }
@@ -145,6 +145,9 @@ const WS_COLUMNS = new Set([
   "business_done", "anthropic_key_enc", "claude_model", "claude_ok", "google_sa_enc", "google_sa_email",
   "google_calendar_id", "google_ok", "tested", "widget_enabled", "widget_color", "widget_greeting", "kapso_key_enc",
   "kapso_phone_number_id", "kapso_display_number", "kapso_webhook_id", "kapso_webhook_secret_enc", "whatsapp_enabled", "shared_key_id",
+  "business_type", "contact_email", "contact_phone", "address", "maps_url", "website", "socials", "meeting_link", "services_migrated",
+  "online_discount_pct", "pay_at_venue", "razorpay_key_id", "razorpay_secret_enc", "razorpay_webhook_secret_enc", "upi_id", "upi_name",
+  "owner_phones", "google_refresh_enc", "google_account_email",
 ]);
 
 export async function updateWorkspace(id: number, fields: Partial<Workspace>) {
