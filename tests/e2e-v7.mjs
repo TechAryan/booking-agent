@@ -450,5 +450,129 @@ const ownerMsg = await (async () => { const x = await wa("wamid.o3", "9198111222
 ok(ownerMsg.includes("talking to the OWNER"), "WhatsApp owner prompt is the owner one");
 ok(outs.some((l) => l.body.to === "919700000000"), "normal customers still get the booking assistant");
 
+
+{
+// ================= v8: step bar, Google permissions, owner books for callers, payment screenshots =================
+r = await cu.page("/setup/google");
+ok(r.text.includes('class="sep"') && r.text.includes('href="/setup/payments"') && r.text.includes('href="/setup/holidays"') && r.text.includes("Optional"), "step bar shows the optional steps");
+r = await cu.req(`/setup/google/callback?code=fake-partial&state=${encodeURIComponent(cu.csrf)}`);
+ok(r.status === 302 && r.loc.includes("missing=") && dec(r.loc).includes("unticked"), "unticked Google permissions are caught", dec(r.loc));
+r = await cu.page(r.loc);
+ok(r.text.includes("View and edit events") && r.text.includes("left unticked"), "page names the missing permission");
+ok(fakeLog().length >= 0 && (await cu.page("/setup/google")).text.includes("Connected"), "earlier Google connection kept");
+
+await cu.page("/setup/payments");
+await cu.post("/setup/payments/upi", { upi_id: "glow@okhdfcbank", upi_name: "Glow Studio" });
+const lastOut = (to) => fakeLog().filter((l) => l.url?.includes("/meta/whatsapp/") && l.body?.to === to && l.body?.type === "text").at(-1)?.body?.text?.body || "";
+const resultOf = (txt) => { try { return JSON.parse(txt.replace(/^RESULT \w+: /, "")); } catch { return {}; } };
+const waImg = async (id, from, bytes, caption = "") => {
+  const raw = JSON.stringify({ message: { id, type: "image", from, image: { id: `media_${Buffer.from(bytes).toString("hex")}`, mime_type: "image/png", caption }, kapso: { direction: "inbound" } }, conversation: { phone_number: `+${from}` }, phone_number_id: "111222333" });
+  return anon.req(`/webhooks/kapso/${pub}`, { method: "POST", raw, headers: { "content-type": "application/json", "x-webhook-event": "whatsapp.message.received", "x-webhook-signature": crypto.createHmac("sha256", wsec).update(raw).digest("hex") } });
+};
+const OWNER = "919811122233";
+const openDay = async (from) => { for (let d = from; d < from + 10; d++) { const a = await cu.tool("check_availability", { date: ist(d), service: "Facial" }); if (a.slots?.length >= 6) return { d, a }; } };
+let seq8 = 100;
+const ownerSay = async (text) => { await wa(`wamid.v8.${seq8++}`, OWNER, text); await sleep(900); return lastOut(OWNER); };
+const cust = async (from, text) => { await wa(`wamid.v8.${seq8++}`, from, text); await sleep(900); return lastOut(from); };
+
+// Owner books for a caller over WhatsApp
+r = await cu.page("/");
+let tools8 = await ownerSay("!tools");
+ok(tools8.includes("book_for_customer") && tools8.includes("attach_payment_proof"), "owner has the book-for-customer + proof tools", tools8);
+const D9 = await openDay(9); av = D9.a;
+let ob = resultOf(await ownerSay(`!tool book_for_customer ${JSON.stringify({ customer_name: "Ravi Kumar", customer_phone: "98700 12345", service: "Skin check", start: `${ist(D9.d)}T${av.slots[0]}` })}`));
+ok(ob.ok && ob.status === "confirmed" && ob.customer_message?.includes("Ravi"), "owner books a free service for a caller", JSON.stringify(ob));
+ok(lastOut("919870012345").includes("you're booked at Glow Studio"), "customer gets the details on WhatsApp");
+ob = resultOf(await ownerSay(`!tool book_for_customer ${JSON.stringify({ customer_name: "Neha", customer_phone: "+91 98700 22222", service: "Facial", start: `${ist(D9.d)}T${av.slots[2]}`, payment: "link" })}`));
+ok(ob.ok && ob.status === "pending_manual" && ob.payUrl && ob.customer_message.includes(ob.payUrl), "owner: send a payment link (UPI page)", JSON.stringify(ob));
+const linkRef = ob.ref, linkPay = ob.payUrl.replace("http://localhost:3300", "");
+ob = resultOf(await ownerSay(`!tool book_for_customer ${JSON.stringify({ customer_name: "Paid Pal", customer_phone: "9870033333", service: "Facial", start: `${ist(D9.d)}T${av.slots[4]}`, payment: "paid", paid_how: "upi", amount_paid: 750 })}`));
+ok(ob.ok && ob.status === "confirmed", "owner: already paid by UPI", JSON.stringify(ob));
+const paidRef = ob.ref;
+await waImg(`wamid.v8.${seq8++}`, OWNER, "owner-proof");
+await sleep(900);
+let o8 = resultOf(await ownerSay(`!tool attach_payment_proof {"ref":"${paidRef}"}`));
+ok(o8.ok && o8.message.includes("Saved the screenshot"), "owner attaches a payment screenshot", JSON.stringify(o8));
+r = await cu.page("/bookings?f=upcoming");
+ok(r.text.includes("₹750 paid (UPI)") && r.text.includes("Your payment proof"), "bookings page: paid by UPI + proof link");
+const proofHref = r.text.match(new RegExp(`/bookings/${paidRef}/proof/(\\d+)`))?.[0];
+r = await cu.req(proofHref || "/x");
+ok(r.status === 200 && r.text === "owner-proof", "proof image opens for the owner");
+r = await anon.req(proofHref || "/x");
+ok(r.status === 302 || r.status === 401, "proof image needs login");
+o8 = resultOf(await ownerSay(`!tool attach_payment_proof {"ref":"${paidRef}"}`));
+ok(!o8.ok && o8.message.includes("No photo"), "attaching again needs a new photo");
+
+// Customer sends a UPI screenshot on WhatsApp
+const C = "919700000000";
+const D10 = await openDay(D9.d + 1); av = D10.a;
+let cb = resultOf(await cust(C, `!tool book_appointment ${JSON.stringify({ start: `${ist(D10.d)}T${av.slots[0]}`, service: "Facial", customer_name: "Kiran", payment: "online" })}`));
+ok(cb.ok && cb.status === "pending_manual", "customer books with UPI", JSON.stringify(cb) + lastOut(C));
+const amt = cb.amount;
+let ct = await cust(C, "!tools");
+ok(ct.includes("send_payment_proof"), "customer has the screenshot tool on WhatsApp");
+await waImg(`wamid.v8.${seq8++}`, C, `amt=${amt + 100};utr=123412341234;vpa=glow@okhdfcbank`);
+await sleep(900);
+let pr = resultOf(await cust(C, "!tool send_payment_proof {}"));
+ok(!pr.ok && pr.status === "problem" && pr.message.includes(`not ₹${amt}`), "wrong amount is caught", JSON.stringify(pr));
+await waImg(`wamid.v8.${seq8++}`, C, `amt=${amt};utr=123412341234;vpa=someone@ybl`);
+await sleep(900);
+pr = resultOf(await cust(C, "!tool send_payment_proof {}"));
+ok(!pr.ok && pr.message.includes("someone@ybl"), "paid to the wrong UPI ID is caught", JSON.stringify(pr));
+await waImg(`wamid.v8.${seq8++}`, C, `amt=${amt};utr=123412341234;vpa=glow@okhdfcbank`);
+await sleep(900);
+pr = resultOf(await cust(C, "!tool send_payment_proof {}"));
+ok(pr.ok && pr.status === "checking", "matching screenshot → owner asked to confirm (auto off)", JSON.stringify(pr));
+ok(lastOut(OWNER).includes(cb.ref) && lastOut(OWNER).includes("123412341234"), "owner told with amount + UTR", lastOut(OWNER));
+r = await cu.page("/bookings?f=pending");
+ok(r.text.includes("Customer&#39;s screenshot") && r.text.includes("looks right") && r.text.includes("t match: the amount"), "bookings page shows the screenshots and checks", (r.text.match(/<\/svg>[^<]*<\/a>[^<]*/g) || []).join(" || "));
+
+// Auto-confirm on; a fresh booking + good screenshot is confirmed; reusing a UTR isn't.
+await cu.page("/setup/payments");
+await cu.post("/setup/payments/upi", { upi_id: "glow@okhdfcbank", upi_name: "Glow Studio", upi_auto_confirm: "1" });
+cb = resultOf(await cust(C, `!tool book_appointment ${JSON.stringify({ start: `${ist(D10.d)}T${av.slots[2]}`, service: "Facial", customer_name: "Kiran", payment: "online" })}`));
+await waImg(`wamid.v8.${seq8++}`, C, `amt=${amt};utr=999988887777;vpa=glow@okhdfcbank`);
+await sleep(900);
+pr = resultOf(await cust(C, `!tool send_payment_proof {"ref":"${cb.ref}"}`));
+ok(pr.ok && pr.status === "confirmed", "auto-confirm when everything matches", JSON.stringify(pr));
+r = await cu.page("/bookings?f=upcoming");
+ok(r.text.includes(cb.ref) && !r.text.match(new RegExp(`${cb.ref}[\\s\\S]{0,800}UPI to confirm`)), "booking now paid");
+const cb3 = resultOf(await cust(C, `!tool book_appointment ${JSON.stringify({ start: `${ist(D10.d)}T${av.slots[4]}`, service: "Facial", customer_name: "Kiran", payment: "online" })}`));
+await waImg(`wamid.v8.${seq8++}`, C, `amt=${amt};utr=999988887777;vpa=glow@okhdfcbank`);
+await sleep(900);
+pr = resultOf(await cust(C, `!tool send_payment_proof {"ref":"${cb3.ref}"}`));
+ok(!pr.ok && pr.message.includes("already used"), "same transaction ID can't pay twice", JSON.stringify(pr));
+await waImg(`wamid.v8.${seq8++}`, C, `amt=${amt};vpa=glow@okhdfcbank`);
+await sleep(900);
+pr = resultOf(await cust(C, `!tool send_payment_proof {"ref":"${cb3.ref}"}`));
+ok(pr.ok && pr.status === "checking", "no UTR visible → not auto-confirmed, owner checks", JSON.stringify(pr));
+await waImg(`wamid.v8.${seq8++}`, C, "junk=1");
+await sleep(900);
+pr = resultOf(await cust(C, "!tool send_payment_proof {}"));
+ok(!pr.ok, "a random photo isn't a payment", JSON.stringify(pr));
+
+// Pay page upload (website customers)
+r = await anon.req(linkPay);
+ok(r.text.includes("Upload payment screenshot") && r.text.includes("/proof"), "pay page offers a screenshot upload");
+const fd = new FormData();
+fd.append("shot", new Blob([`amt=${resultOf(JSON.stringify({})).x ?? ""}`], { type: "image/png" }), "s.png");
+const upl = await fetch(`${BASE}${linkPay}/proof`, { method: "POST", body: (() => { const f = new FormData(); f.append("shot", new Blob([`amt=680;utr=555566667777;vpa=glow@okhdfcbank`], { type: "image/png" }), "s.png"); return f; })(), redirect: "manual" });
+ok(upl.status === 303, "screenshot uploaded from the pay page");
+r = await anon.req(linkPay);
+ok(r.text.includes("Screenshot received") || r.text.includes("You're booked"), "pay page shows it was received / confirmed", r.text.slice(0, 300));
+const badUp = await fetch(`${BASE}${linkPay.replace(/\/[^/]+$/, "/wrongtoken")}/proof`, { method: "POST", body: (() => { const f = new FormData(); f.append("shot", new Blob(["x"], { type: "image/png" }), "s.png"); return f; })(), redirect: "manual" });
+ok(badUp.status === 404, "pay page upload needs the signed link");
+
+// Walk-in form can send a payment link
+r = await cu.page("/bookings/new");
+ok(r.text.includes("Send a payment link"), "walk-in form offers a payment link");
+const D11 = await openDay(D10.d + 1);
+const sl2 = JSON.parse((await cu.req(`/bookings/slots?date=${ist(D11.d)}&service=${facialId}`)).text);
+r = await cu.post("/bookings/new", { service_id: facialId, mode: "offline", date: ist(D11.d), time: sl2.slots[0], name: "Link Lee", phone: "98700 44444", paid: "link" });
+ok(dec(r.loc).includes("send=https://wa.me/919870044444"), "walk-in with link → one-tap WhatsApp forward", dec(r.loc));
+r = await cu.page(r.loc);
+ok(r.text.includes("Send on WhatsApp"), "bookings page shows the Send on WhatsApp button");
+
+}
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

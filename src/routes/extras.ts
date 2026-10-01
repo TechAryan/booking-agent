@@ -19,6 +19,8 @@ import { decrypt, encrypt, mask, randomToken, rateLimited } from "../security.js
 import { html, raw, Safe } from "../views/html.js";
 import { icon, tile } from "../views/icons.js";
 import { csrfField, page, withMsg } from "../views/layout.js";
+import { stepNav } from "../views/stepper.js";
+import { proofImage, proofsFor } from "../proofs.js";
 
 export const extraRoutes = Router();
 const docsUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024, files: 8 } });
@@ -44,7 +46,7 @@ extraRoutes.get("/setup/profile", requireLogin, async (req, res) => {
   res.send(
     page(req, {
       title: "Profile & knowledge",
-      body: html`${BACK}
+      body: html`${stepNav(req, "profile", w)}
         ${head("profile", "Optional · everything here can be left blank", "Profile & knowledge")}
         <p class="sub">Everything the assistant should know about your business: where you are, how to reach you, and any details it can use to answer questions.</p>
 
@@ -257,7 +259,7 @@ extraRoutes.get("/setup/holidays", requireLogin, async (req, res) => {
   res.send(
     page(req, {
       title: "Holidays",
-      body: html`${BACK}
+      body: html`${stepNav(req, "holidays", w)}
         ${head("holiday", "Optional", "Holidays & days off")}
         <p class="sub">No bookings are offered on these days, and customers who ask are told you're closed. All-day events in your Google Calendar called “Holiday”, “Leave”, “Closed” or “Vacation” also count automatically.</p>
         <div class="card">
@@ -360,7 +362,7 @@ extraRoutes.get("/setup/payments", requireLogin, async (req, res) => {
   res.send(
     page(req, {
       title: "Payments",
-      body: html`${BACK}
+      body: html`${stepNav(req, "payments", w)}
         ${head("wallet", "Optional", "Payments")}
         <p class="sub">For paid services the assistant asks customers to pay online now or at your place. Free services (price 0) skip all of this.</p>
         ${!paid.length ? html`<div class="flash info">All your services are free right now. Set prices on the <a href="/setup/business">Business page</a> to take payments.</div>` : ""}
@@ -413,13 +415,14 @@ extraRoutes.get("/setup/payments", requireLogin, async (req, res) => {
 
         <div class="card" id="upi">
           <div class="page-head tight">${tile("send")}<div><h2>UPI ${razorpayReady(w) ? html`<span class="tag">Backup</span>` : ""}</h2></div></div>
-          <p class="muted">${razorpayReady(w) ? "Used only if Razorpay isn't connected." : "No sign-up needed."} Customers get a page with your UPI QR code and a “Pay with UPI app” button. You confirm the payment from the Bookings page, or from WhatsApp by telling the assistant “BK-… paid”.</p>
+          <p class="muted">${razorpayReady(w) ? "Used only if Razorpay isn't connected." : "No sign-up needed."} Customers get a page with your UPI QR code and a “Pay with UPI app” button. Customers send a payment screenshot (on WhatsApp or the payment page); the assistant reads it and checks the amount, your UPI ID and the transaction ID, then tells you. You confirm from the Bookings page, or on WhatsApp by telling the assistant “BK-… paid”.</p>
           <form method="post" action="/setup/payments/upi" data-busy="Saving…">
             ${csrfField(req)}
             <div class="grid">
               <div><label>UPI ID</label><input type="text" name="upi_id" value="${w.upi_id}" placeholder="yourname@okhdfcbank" autocomplete="off"></div>
               <div><label>Name shown to payers</label><input type="text" name="upi_name" value="${w.upi_name}" placeholder="${w.business_name || "Your business"}" maxlength="50"></div>
             </div>
+            <label class="switch-row"><input type="checkbox" name="upi_auto_confirm" value="1" ${w.upi_auto_confirm ? "checked" : ""}><span><b>Confirm automatically when the screenshot checks out</b><small>Only when the amount, your UPI ID and a fresh 12-digit transaction ID all match. Screenshots can be edited, so you still get a message to check your bank. For fully automatic, fraud-proof payments use Razorpay.</small></span></label>
             <div class="row"><button class="secondary">Save UPI</button>${upiReady(w) ? html`<span class="pill ok">Ready</span>` : ""}</div>
           </form>
         </div>
@@ -461,7 +464,7 @@ extraRoutes.post("/setup/payments/upi", requireLogin, checkCsrf, async (req, res
   const w = await ws(req);
   const id = String(req.body.upi_id || "").trim();
   if (id && !/^[\w.\-]{2,}@[a-zA-Z][\w.]{1,}$/.test(id)) return res.redirect(withMsg("/setup/payments#upi", "err", "That doesn't look like a UPI ID (name@bank)."));
-  await updateWorkspace(w.id, { upi_id: id, upi_name: String(req.body.upi_name || "").trim().slice(0, 50) });
+  await updateWorkspace(w.id, { upi_id: id, upi_name: String(req.body.upi_name || "").trim().slice(0, 50), upi_auto_confirm: req.body.upi_auto_confirm === "1" ? 1 : 0 });
   res.redirect(withMsg("/setup/payments#upi", "ok", id ? "UPI saved." : "UPI removed."));
 });
 
@@ -480,7 +483,7 @@ function statusChip(b: Booking): Safe {
 function payLabel(b: Booking) {
   if (b.pay_method === "free") return "Free";
   const a = inr(b.amount);
-  if (b.pay_method === "venue") return b.pay_status === "paid" ? `${a} paid in person` : `${a} at venue`;
+  if (b.pay_method === "venue") return b.pay_status === "paid" ? `${a} paid in person` : b.mode === "online" ? `${a} to pay later` : `${a} at venue`;
   if (b.pay_status === "paid") return `${a} paid ${b.pay_method === "upi" ? "(UPI)" : "online"}`;
   return `${a} ${b.pay_method === "upi" ? "UPI" : "online"}`;
 }
@@ -489,6 +492,7 @@ extraRoutes.get("/bookings", requireLogin, async (req, res) => {
   const w = await ws(req);
   const f = (FILTERS.some(([k]) => k === req.query.f) ? req.query.f : "upcoming") as BookingFilter;
   const rows = await listBookings(w, f, 200);
+  const proofs = await proofsFor(w, rows.map((b) => b.id));
   const counts = Object.fromEntries(await Promise.all(FILTERS.map(async ([k]) => [k, (await listBookings(w, k, 500)).length])));
   let lastDay = "";
   res.send(
@@ -502,6 +506,9 @@ extraRoutes.get("/bookings", requireLogin, async (req, res) => {
             ${w.google_ok ? html`<a class="btn" href="/bookings/new">${icon("plus", 16)} Add booking</a>` : ""}
           </div>
         </div>
+        ${typeof req.query.send === "string" && /^https:\/\/wa\.me\/\d+\?text=/.test(req.query.send)
+          ? html`<div class="card send-link"><span class="grow"><b>Send the payment link</b><small>Opens WhatsApp with the message ready. WhatsApp only lets the business number message a customer within 24 hours of their last message, so sending from your own phone always works.</small></span><a class="btn" href="${req.query.send}" target="_blank" rel="noopener">Send on WhatsApp</a></div>`
+          : ""}
         <div class="chips" role="tablist" aria-label="Filter bookings">
           ${FILTERS.map(([k, l]) => html`<a role="tab" aria-selected="${k === f ? "true" : "false"}" class="chip ${k === f ? "on" : ""} ${k === "pending" && counts[k] ? "attn" : ""}" href="/bookings?f=${k}">${l}<i>${counts[k]}</i></a>`)}
         </div>
@@ -516,6 +523,7 @@ extraRoutes.get("/bookings", requireLogin, async (req, res) => {
                   <b>${b.customer_name}</b> <span class="muted">· ${b.service_name}${b.mode === "online" ? " · online" : ""}</span>
                   <small>${b.ref} · ${payLabel(b)}${b.customer_phone ? html` · <a href="https://wa.me/${b.customer_phone}" target="_blank" rel="noopener">+${b.customer_phone}</a>` : ""}${b.customer_email ? ` · ${b.customer_email}` : ""}${b.meet_link ? html` · <a href="${b.meet_link}" target="_blank" rel="noopener">Meet link</a>` : ""}</small>
                   ${b.note ? html`<small class="muted">${b.note}</small>` : ""}
+                  ${proofs.filter((p) => p.booking_id === b.id).map((p) => html`<small class="proof-line ${p.verdict}"><a href="/bookings/${b.ref}/proof/${p.id}" target="_blank" rel="noopener">${icon("file", 13)} ${p.verdict === "owner" ? "Your payment proof" : "Customer's screenshot"}</a>${p.verdict === "ok" ? ` · looks right${p.amount != null ? ` (${inr(p.amount)}${p.utr ? `, UTR ${p.utr}` : ""})` : ""}` : p.verdict === "mismatch" || p.verdict === "unreadable" ? ` · doesn't match: ${p.detail}` : ""}</small>`)}
                 </div>
                 ${statusChip(b)}
                 <div class="bk-actions">
@@ -534,6 +542,18 @@ extraRoutes.get("/bookings", requireLogin, async (req, res) => {
           : html`<div class="card"><div class="empty">${tile("book", "lg")}<b>${f === "upcoming" ? "No upcoming bookings" : "Nothing here"}</b><span>${f === "upcoming" ? "Bookings from WhatsApp and your website appear here as they come in." : "All clear."}</span></div></div>`}`,
     })
   );
+});
+
+// ---- Payment screenshots
+extraRoutes.get("/bookings/:ref/proof/:id", requireLogin, async (req, res) => {
+  const w = await ws(req);
+  const b = await getBooking(w, String(req.params.ref));
+  const p = b ? await proofImage(w, Number(req.params.id)) : undefined;
+  if (!b || !p || p.booking_id !== b.id) return res.status(404).send("Not found");
+  res.setHeader("Content-Type", p.mime);
+  res.setHeader("Cache-Control", "private, max-age=3600");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.send(Buffer.from(p.image, "base64"));
 });
 
 async function bookingAction(req: Request, fn: (w: Workspace, b: Booking) => Promise<{ message: string }>) {
@@ -599,9 +619,10 @@ extraRoutes.get("/bookings/new", requireLogin, async (req, res) => {
             </div>
             <div data-paid-field>
               <label>Payment</label>
-              <div class="segmented pay two">
-                <label><input type="radio" name="paid" value="venue" checked><span>Will pay at the venue</span></label>
+              <div class="segmented pay ${razorpayReady(w) || upiReady(w) ? "three" : "two"}">
+                <label><input type="radio" name="paid" value="venue" checked><span>Pays at the venue / later</span></label>
                 <label><input type="radio" name="paid" value="paid"><span>Already paid</span></label>
+                ${razorpayReady(w) || upiReady(w) ? html`<label><input type="radio" name="paid" value="link"><span>Send a payment link</span></label>` : ""}
               </div>
             </div>
             <label class="switch-row"><input type="checkbox" name="notify" value="1" checked><span><b>Message them on WhatsApp</b><small>Sends the booking details if WhatsApp is connected (only works if they've messaged you in the last 24 hours).</small></span></label>
@@ -622,9 +643,14 @@ extraRoutes.post("/bookings/new", requireLogin, checkCsrf, async (req, res) => {
   const svc = (await listServices(w)).find((x) => String(x.id) === String(b.service_id));
   const r = await book(w, {
     start: `${b.date}T${b.time}`, serviceName: svc?.name, customerName: String(b.name).trim(), phone: full, email: b.email, mode: b.mode,
-    payment: "venue", paidInPerson: b.paid === "paid", channel: "manual", owner: `manual:${full}`,
+    payment: b.paid === "link" ? "online" : b.paid === "paid" ? "paid" : "venue", channel: "manual", owner: `wa:${full}`, byOwner: true, phoneVerified: true,
   });
   if (!r.ok) return res.redirect(withMsg("/bookings/new", "err", r.message));
+  if (r.payUrl) {
+    // Hand the owner a one-tap way to send the link from their own WhatsApp (no 24-hour limit there).
+    const text = `Hi ${String(b.name).trim().split(/\s+/)[0]}, you're booked at ${w.business_name} on ${r.when} (ref ${r.ref}). Please pay ${inr(r.amount ?? 0)} here: ${r.payUrl}`;
+    return res.redirect(withMsg(`/bookings?f=pending&send=${encodeURIComponent(`https://wa.me/${full}?text=${encodeURIComponent(text)}`)}`, "ok", `Booked ${r.ref}. Send the payment link to the customer.`));
+  }
   if (b.notify === "1") {
     const bk = await getBooking(w, r.ref);
     if (bk) await notifyCustomer(w, { ...bk, channel: "whatsapp" }, `Hi ${bk.customer_name}, you're booked at ${w.business_name}: ${r.message}`);

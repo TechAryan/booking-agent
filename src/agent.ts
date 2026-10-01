@@ -6,9 +6,10 @@ import { claudeCredsFor } from "./models.js";
 import { canInvite, hoursOf, normPhone, WorkspaceCalendar } from "./calendar.js";
 import {
   addHoliday, addOffer, addService, deleteHoliday, deleteOffer, deleteService, findService, inr, knowledgeForPrompt, listHolidays,
-  listOffers, listServices, mapsLink, quote, Service, socialsOf, todayIn, updateService,
+  listOffers, listServices, mapsLink, normIndian, quote, Service, socialsOf, todayIn, updateService,
 } from "./catalog.js";
-import { book, cancelBooking, checkPayment, confirmManualPayment, getBooking, listBookings, listForOwner, notifyCustomer, notifyOwners, priceInfo, reschedule, whenText } from "./bookings.js";
+import { book, Booking, cancelBooking, checkPayment, confirmManualPayment, getBooking, listBookings, listForOwner, notifyCustomer, notifyOwners, priceInfo, reschedule, tryWhatsApp, whenText } from "./bookings.js";
+import { attachOwnerProof, latestLoosePhoto, submitCustomerProof } from "./proofs.js";
 import { razorpayReady, upiReady } from "./payments.js";
 
 export type Channel = "whatsapp" | "widget" | "test";
@@ -106,6 +107,13 @@ function customerTools(ws: Workspace, channel: Channel, services: Service[]): An
       description: "Cancel one of their bookings (free or not-yet-paid only; paid bookings can't be cancelled, offer to reschedule). Confirm with the customer first.",
       input_schema: obj({ ref: str("Booking ref") }, ["ref"]),
     },
+    ...(channel === "whatsapp" && upiReady(ws)
+      ? [{
+          name: "send_payment_proof",
+          description: "The customer sent a photo of their UPI payment for a booking waiting for payment: check it and pass it to the team. Say exactly what the result's message says.",
+          input_schema: obj({ ref: str("Booking ref (optional if they have just one waiting for payment)") }),
+        }]
+      : []),
     {
       name: "talk_to_human",
       description: "Alert the owner when the customer wants a person, has a complaint, or asks something you can't answer from the facts.",
@@ -157,7 +165,10 @@ Rules:
 - For paid services, call get_price and offer exactly the how_to_pay options it returns (one line, e.g. "₹500 at the clinic, or ₹450 if you pay online now (10% off)"). Never offer online payment unless it's listed there. For online sessions say "pay later", never "at the venue".
 - Before booking have: service, date, time, name${channel === "whatsapp" ? "" : ", phone"}${canInvite(ws) ? ", and ask once for email for the calendar invite (they can skip)" : ""}. Then get a clear yes.
 - After booking, always confirm it: the ref, service, day and time, in one or two lines. In person: add the address and map link only if they're in the facts above (if there's no address, don't mention it). Online: include the meeting link. Never use talk_to_human just because some detail is missing.
-- If payment is awaiting: share the link, say the slot is held for about 20 minutes and it confirms automatically. When they say they paid, call check_payment and say exactly what it returns.
+- If the result status is awaiting_payment (payment link): share the link, say the slot is held for about 20 minutes and it confirms automatically once paid.
+- If the result status is pending_manual (UPI): the slot is already booked; share the UPI link and ask them to send the payment screenshot; the team confirms it. Don't mention any hold or time limit.
+- When they say they paid, call check_payment and say exactly what it returns.${channel === "whatsapp" && upiReady(ws) ? `
+- When they send a photo ("[Sent a photo]") and have a UPI booking waiting for payment, call send_payment_proof and pass on its message. A photo for anything else: just reply normally.` : ""}
 - Cancelling: free and not-yet-paid bookings can be cancelled. Bookings that are already paid can't be cancelled or refunded; kindly offer to move them to another day/time instead. Rescheduling is always allowed.
 - If someone asks for directions or location, give the address and the map link; if no address is listed, say you'll check with the team (talk_to_human).
 - Never invent availability, prices, discounts or policies. Never give medical, legal or financial advice. If unsure, use talk_to_human and say the team will reply.
@@ -200,6 +211,19 @@ async function runCustomerTool(ws: Workspace, channel: Channel, owner: string, p
     }
     case "check_payment":
       return checkPayment(ws, await mine(input.ref));
+    case "send_payment_proof": {
+      const photo = await latestLoosePhoto(ws, owner);
+      if (!photo) return { ok: false, message: "No photo received yet. Ask them to send the payment screenshot here." };
+      let b: Booking | undefined;
+      if (input.ref) b = await mine(input.ref);
+      else {
+        const waiting = await db.all<Booking>("SELECT * FROM bookings WHERE workspace_id=? AND owner=? AND pay_status='pending_manual' AND status='confirmed' ORDER BY id DESC", ws.id, owner);
+        if (waiting.length > 1) return { ok: false, message: `They have ${waiting.length} bookings waiting for payment (${waiting.map((x) => x.ref).join(", ")}). Ask which one this screenshot is for.` };
+        b = waiting[0];
+      }
+      if (!b) return { ok: false, message: "No booking of theirs is waiting for a UPI payment." };
+      return submitCustomerProof(ws, b, photo.id);
+    }
     case "list_my_appointments":
       return listForOwner(ws, owner);
     case "reschedule_appointment":
@@ -253,13 +277,29 @@ function ownerTools(): Anthropic.Tool[] {
     { name: "confirm_payment", description: "The owner checked their UPI/bank: mark a pending payment as received (or not, which cancels it).", input_schema: obj({ ref: str("Booking ref"), received: { type: "boolean" } }, ["ref", "received"]) },
     { name: "cancel_booking", description: "Cancel a customer's booking and tell them. Paid bookings can't be cancelled (move them instead). Confirm first.", input_schema: obj({ ref: str("Booking ref"), reason: str("Shown to the customer") }, ["ref"]) },
     { name: "reschedule_booking", description: "Move a customer's booking to a new free time and tell them.", input_schema: obj({ ref: str("Booking ref"), new_start: str("YYYY-MM-DDTHH:mm") }, ["ref", "new_start"]) },
-    { name: "check_availability", description: "Free times on a date.", input_schema: obj({ date: str("YYYY-MM-DD") }, ["date"]) },
+    { name: "check_availability", description: "Free times on a date (pass the service for the right length).", input_schema: obj({ date: str("YYYY-MM-DD"), service: str("Service name (optional)") }, ["date"]) },
+    {
+      name: "book_for_customer",
+      description: "Book for a customer who called or walked in. Needs name, mobile number, service, a free start time (check_availability first), online/in person if the service offers both, and for paid services how they pay. Read back the details and get a yes before calling.",
+      input_schema: obj({
+        customer_name: str("Customer's name"), customer_phone: str("Customer's mobile number"), customer_email: str("Optional: for a calendar invite"),
+        service: str("Service name"), start: str("YYYY-MM-DDTHH:mm"), mode: { type: "string", enum: ["online", "offline"] },
+        payment: { type: "string", enum: ["link", "later", "paid"], description: "Paid services: link = send them a payment link now; later = pay at the venue / later; paid = already paid to the owner" },
+        paid_how: { type: "string", enum: ["cash", "upi"], description: "With payment=paid" },
+        amount_paid: num("With payment=paid, only if different from the price"),
+      }, ["customer_name", "customer_phone", "service", "start"]),
+    },
+    {
+      name: "attach_payment_proof",
+      description: "Save the photo the owner just sent as payment proof for a booking (also marks a pending UPI payment as received).",
+      input_schema: obj({ ref: str("Booking ref") }, ["ref"]),
+    },
   ];
 }
 
 async function ownerPrompt(ws: Workspace, services: Service[]) {
   return `You are the control assistant for ${ws.business_name}. You are talking to the OWNER (verified by their phone number), not a customer.
-You help them manage the booking assistant: services and prices, free/paid, online/offline, online-payment discount, special offers, holidays, business details and instructions, and bookings (see them, confirm UPI payments, cancel).
+You help them manage the booking assistant: services and prices, free/paid, online/offline, online-payment discount, special offers, holidays, business details and instructions, and bookings (see them, book for customers who call, confirm UPI payments, move, cancel).
 
 <current_setup>
 ${await businessFacts(ws, services)}
@@ -273,10 +313,18 @@ Rules:
 - After a change, confirm in one short line what changed.
 - Resolve dates like "next Friday" or "Diwali week" to real dates (ask if unsure). Prices are in rupees.
 - Short, plain-text replies in the owner's language.
+- Booking for a customer (they called or walked in): collect name, mobile number, service, day and time (check_availability, then offer free times), online or in person if the service offers both, optional email for a calendar invite, and for paid services how they pay:
+  · "link": we create a payment link (or UPI page) for the customer;
+  · "later": they pay at the venue / later;
+  · "paid": already paid; ask cash or UPI, and say they can send a screenshot here as proof (optional).
+  Read it back in one line and get a yes, then call book_for_customer.
+- After book_for_customer: if whatsapp_sent is false, give the owner the forward_link and say: "Tap this to send the booking details (and payment link, if any) to the customer from your WhatsApp" (WhatsApp lets us message a customer only within 24 hours of their last message to us). If it was sent, say so.
+- When the owner sends a photo ("[Sent a photo]"), it's usually a payment proof: use the booking you just made, or ask which booking it's for, then call attach_payment_proof.
+- If the owner pastes a bank/UPI credit message or says they received money, find the matching booking waiting for payment (list_bookings with filter pending, match amount/name) and confirm it with confirm_payment. If several could match, ask.
 - If they want to try the customer experience here, tell them to start the message with /customer .`;
 }
 
-async function runOwnerTool(ws: Workspace, name: string, input: any, services: Service[]) {
+async function runOwnerTool(ws: Workspace, name: string, input: any, services: Service[], ownerExt: string) {
   const svc = (x: any) => {
     const s = findService(services, x);
     if (!s) throw new Error(`No service "${x}". Services: ${services.map((s) => `${s.name} (id ${s.id})`).join(", ") || "none"}`);
@@ -376,8 +424,39 @@ async function runOwnerTool(ws: Workspace, name: string, input: any, services: S
       if (r.ok) await notifyCustomer(ws, b, `Your ${b.service_name} booking (ref ${b.ref}) has been moved by ${ws.business_name} to ${r.message.replace(/^Moved to /, "").replace(/\. Ref.*$/, "")}. Reply here if that doesn't work for you.`);
       return r;
     }
-    case "check_availability":
-      return new WorkspaceCalendar(ws).availableSlots(input.date);
+    case "check_availability": {
+      const s = input.service ? findService(services, input.service) : undefined;
+      return new WorkspaceCalendar(ws).availableSlots(input.date, s?.duration_minutes || ws.slot_minutes);
+    }
+    case "book_for_customer": {
+      const phone = normIndian(String(input.customer_phone || ""));
+      if (phone.length < 11 || phone.length > 15) throw new Error("Need the customer's full mobile number.");
+      const pay = input.payment === "link" ? "online" : input.payment === "paid" ? "paid" : "venue";
+      const r = await book(ws, {
+        start: input.start, serviceName: input.service, customerName: String(input.customer_name || "").trim() || "Customer", phone, email: input.customer_email,
+        mode: input.mode, payment: pay, paidHow: input.paid_how === "upi" ? "upi" : "cash", amountPaid: input.amount_paid,
+        channel: "phone", owner: `wa:${phone}`, byOwner: true, phoneVerified: true,
+      });
+      if (!r.ok) return r;
+      const first = String(input.customer_name || "").trim().split(/\s+/)[0] || "there";
+      const lines = [
+        `Hi ${first}, you're booked at ${ws.business_name}: ${(await getBooking(ws, r.ref))?.service_name}, ${r.when}. Ref ${r.ref}.`,
+        r.payUrl ? `Please pay ${inr(r.amount ?? 0)} here: ${r.payUrl}${r.status === "awaiting_payment" ? ` (the slot is held for ${r.expiresInMinutes} minutes)` : ""}` : "",
+        r.meetLink ? `Join online: ${r.meetLink}` : "",
+        r.location ? `Address: ${r.location}${r.mapsLink ? ` · Map: ${r.mapsLink}` : ""}` : "",
+      ].filter(Boolean);
+      const text = lines.join("\n");
+      const sent = await tryWhatsApp(ws, phone, text);
+      return {
+        ...r, customer_message: text, whatsapp_sent: sent,
+        forward_link: sent ? undefined : `https://wa.me/${phone}?text=${encodeURIComponent(text)}`,
+      };
+    }
+    case "attach_payment_proof": {
+      const photo = await latestLoosePhoto(ws, `owner:${ownerExt}`);
+      if (!photo) return { ok: false, message: "No photo from you in the last 2 hours. Send the screenshot here first." };
+      return attachOwnerProof(ws, await booking(input.ref), photo.id);
+    }
   }
   throw new Error(`Unknown tool ${name}`);
 }
@@ -463,7 +542,7 @@ export async function reply(
       if (block.type !== "tool_use") continue;
       try {
         const out = asOwner
-          ? await runOwnerTool(ws, block.name, block.input, list)
+          ? await runOwnerTool(ws, block.name, block.input, list, externalId)
           : await runCustomerTool(ws, channel, owner, normPhone(phone || (block.input as any)?.customer_phone || ""), block.name, block.input, list);
         results.push({ type: "tool_result", tool_use_id: block.id, content: JSON.stringify(out) });
         if (asOwner) list = await listServices(ws);

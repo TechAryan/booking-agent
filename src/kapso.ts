@@ -79,3 +79,9 @@ export function markRead(apiKey: string, phoneNumberId: string, messageId: strin
     .messages.markRead({ phoneNumberId, messageId, typingIndicator: { type: "text" } })
     .catch((e: any) => console.warn("markRead failed:", e?.message));
 }
+
+/** Downloads a photo a customer sent (WhatsApp media id → bytes). */
+export async function downloadMedia(apiKey: string, phoneNumberId: string, mediaId: string): Promise<Buffer> {
+  const ab = (await wa(apiKey).media.download({ mediaId, phoneNumberId, as: "arrayBuffer" })) as ArrayBuffer;
+  return Buffer.from(ab);
+}

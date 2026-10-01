@@ -2,7 +2,9 @@ import express, { Router } from "express";
 import { reply, resetConversation } from "../agent.js";
 import { db, logActivity, Workspace } from "../db.js";
 import { env } from "../env.js";
-import { markRead, sendText } from "../kapso.js";
+import { downloadMedia, markRead, sendText } from "../kapso.js";
+import multer from "multer";
+import { MAX_PROOF_BYTES, proofsFor, saveProofImage, submitCustomerProof } from "../proofs.js";
 import { accessProblem, getWorkspaceByPublicId } from "../models.js";
 import { decrypt, hmacHex, rateLimited, safeEqual } from "../security.js";
 import { html, raw } from "../views/html.js";
@@ -149,16 +151,17 @@ publicRoutes.post("/webhooks/kapso/:id", express.raw({ type: "*/*", limit: "2mb"
   const items: any[] = payload?.batch && Array.isArray(payload.data) ? payload.data : [payload];
 
   // With buffering on, several quick messages from one person arrive together: answer them as one.
-  const byPhone = new Map<string, { ids: string[]; texts: string[]; name?: string; nonText: boolean }>();
+  const byPhone = new Map<string, WaGroup>();
   for (const item of items) {
     const msg = item?.message;
     if (!msg?.id || msg?.kapso?.direction === "outbound" || !await firstTime(`${ws.id}:${msg.id}`)) continue;
     const phone = String(msg.from ?? item?.conversation?.phone_number ?? "").replace(/[^\d]/g, "");
     if (!phone) continue;
-    const g = byPhone.get(phone) ?? { ids: [], texts: [], nonText: false };
+    const g = byPhone.get(phone) ?? { ids: [], texts: [], images: [], nonText: false };
     g.ids.push(msg.id);
     const text = msg.text?.body ?? (msg.type === "text" ? msg.kapso?.content : "") ?? "";
     if (text) g.texts.push(text);
+    else if (msg.type === "image" && msg.image?.id) g.images.push({ id: String(msg.image.id), mime: String(msg.image.mime_type || "image/jpeg"), caption: String(msg.image.caption || "") });
     else g.nonText = true;
     g.name = item?.conversation?.kapso?.contact_name ?? g.name;
     byPhone.set(phone, g);
@@ -166,21 +169,37 @@ publicRoutes.post("/webhooks/kapso/:id", express.raw({ type: "*/*", limit: "2mb"
   for (const [phone, g] of byPhone) enqueue(`${ws.id}:${phone}`, () => handleWhatsApp(live, phone, g));
 });
 
-async function handleWhatsApp(ws: Workspace, phone: string, g: { ids: string[]; texts: string[]; name?: string; nonText: boolean }) {
+type WaGroup = { ids: string[]; texts: string[]; images: { id: string; mime: string; caption: string }[]; name?: string; nonText: boolean };
+
+async function handleWhatsApp(ws: Workspace, phone: string, g: WaGroup) {
   const key = decrypt(ws.kapso_key_enc)!;
   const pnid = ws.kapso_phone_number_id!;
   markRead(key, pnid, g.ids[g.ids.length - 1]);
   let out: string;
-  const text = g.texts.join("\n").trim();
+  const isOwnerNumber = ownerPhones(ws).includes(phone);
+  const ownerSide = isOwnerNumber && !/^\/customer\b/i.test(g.texts[0] || "");
+  // Photos (usually payment screenshots) are saved; the assistant decides which booking they belong to.
+  const notes: string[] = [];
+  for (const im of g.images.slice(0, 3)) {
+    try {
+      const buf = await downloadMedia(key, pnid, im.id);
+      await saveProofImage(ws, ownerSide ? `owner:${phone}` : `wa:${phone}`, buf, im.mime, im.caption);
+      notes.push(`[Sent a photo${im.caption ? `: "${im.caption.slice(0, 200)}"` : ""}]`);
+    } catch (e: any) {
+      console.warn(`[whatsapp ${ws.public_id}] photo`, e?.message);
+      notes.push(`[Sent a photo that couldn't be opened${/large|JPG/.test(e?.message) ? `: ${e.message}` : ""}]`);
+    }
+  }
+  const text = [...g.texts, ...notes].join("\n").trim();
   if (!text) {
-    out = "I can only read text messages for now. Please type your request 🙂";
+    out = "I can read text and photos for now. Please type your request 🙂";
   } else if (text.toLowerCase() === "/reset") {
     await resetConversation(ws.id, "whatsapp", phone);
     out = "Conversation reset. How can I help?";
   } else {
     try {
       // The owner's own number manages the business; "/customer …" lets them try the customer side.
-      const isOwner = ownerPhones(ws).includes(phone);
+      const isOwner = isOwnerNumber;
       const asCustomer = isOwner && /^\/customer\b/i.test(text);
       const msg = asCustomer ? text.replace(/^\/customer\b\s*/i, "") || "Hi" : text;
       out = await reply(ws, "whatsapp", phone, msg, { trustedPhone: phone, contactName: g.name, asOwner: isOwner && !asCustomer });
@@ -232,14 +251,27 @@ publicRoutes.post("/webhooks/razorpay/:id", express.raw({ type: "*/*", limit: "1
 function payShell(ws: Workspace, title: string, body: string) {
   const color = /^#[0-9a-fA-F]{6}$/.test(ws.widget_color) ? ws.widget_color : "#0a84ff";
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${title} · ${ws.business_name.replace(/</g, "&lt;")}</title>${ICON_LINKS.value}<link rel="stylesheet" href="/static/pay.css?v=1"><style>:root{--accent:${color}}</style></head>
-<body><main class="pay">${body}</main><script src="/static/pay.js?v=1"></script></body></html>`;
+<title>${title} · ${ws.business_name.replace(/</g, "&lt;")}</title>${ICON_LINKS.value}<link rel="stylesheet" href="/static/pay.css?v=2"><style>:root{--accent:${color}}</style></head>
+<body><main class="pay">${body}</main><script src="/static/pay.js?v=2"></script></body></html>`;
 }
 
 function gcalLink(ws: Workspace, b: Booking) {
   const f = (iso: string) => DateTime.fromISO(iso).toUTC().toFormat("yyyyLLdd'T'HHmmss'Z'");
   const p = new URLSearchParams({ action: "TEMPLATE", text: `${b.service_name} · ${ws.business_name}`, dates: `${f(b.start_at)}/${f(b.end_at)}`, details: `Booking ${b.ref}${b.meet_link ? `\nJoin: ${b.meet_link}` : ""}`, location: b.mode === "online" ? b.meet_link || "" : ws.address });
   return `https://calendar.google.com/calendar/render?${p}`;
+}
+
+function proofBlock(ws: Workspace, b: Booking, proofs: Awaited<ReturnType<typeof proofsFor>>) {
+  const esc = (x: string) => html`${x}`.toString();
+  const last = proofs.filter((p) => p.sender.startsWith("page:") || p.sender.startsWith("wa:")).at(-1);
+  const action = `/pay/${ws.public_id}/${b.ref}/${payToken(ws, b.ref)}/proof`;
+  const form = (label: string) => `<form class="proof" method="post" action="${action}" enctype="multipart/form-data" data-proof>
+      <label class="btn ghost file"><input type="file" name="shot" accept="image/*" required>${label}</label>
+      <button class="btn" type="submit" hidden>Send screenshot</button></form>`;
+  if (!last) return `<p class="fine">After paying, upload the payment screenshot here (or send it in your chat with ${esc(ws.business_name)}).</p>${form("Upload payment screenshot")}`;
+  if (last.verdict === "mismatch" || last.verdict === "unreadable")
+    return `<div class="note bad"><b>That screenshot didn't match</b><p>${esc(last.detail || "We couldn't read it.")}. If you paid, upload the screenshot of this payment. The business has been told.</p></div>${form("Upload another screenshot")}`;
+  return `<div class="note ok"><b>Screenshot received</b><p>${last.verdict === "ok" ? "It looks right. " : ""}${esc(ws.business_name)} will confirm your payment shortly. This page updates by itself.</p></div><p class="fine" data-poll="/pay/${ws.public_id}/${b.ref}/${payToken(ws, b.ref)}/status" data-poll-upi></p>`;
 }
 
 async function payView(ws: Workspace, b: Booking) {
@@ -260,7 +292,7 @@ async function payView(ws: Workspace, b: Booking) {
     return payShell(ws, "Pay by UPI", `${top}<div class="state"><h1>Pay ${inr(b.amount)} by UPI</h1><p>Your slot is booked. Pay now to confirm it.</p></div>
       <img class="qr" src="${qr}" alt="UPI QR code for ${inr(b.amount)}"><p class="upi mono">${esc(ws.upi_id)}</p>
       <div class="actions"><a class="btn" href="${esc(uri)}">Pay with a UPI app</a></div>${summary}
-      <p class="fine">After paying, send the payment screenshot in your chat with ${esc(ws.business_name)}. They'll confirm it shortly.</p>`);
+      ${proofBlock(ws, b, await proofsFor(ws, [b.id]))}`);
   }
   if (b.status === "held" && b.pay_status === "awaiting") {
     const left = Math.max(0, (b.hold_expires_at ?? 0) - Date.now());
@@ -304,11 +336,31 @@ publicRoutes.get("/pay/:id/:ref/:token/status", async (req, res) => {
   res.json({ status: b.status, pay_status: b.pay_status });
 });
 
+// Payment screenshot from the pay page (website-chat customers have no WhatsApp to send it on).
+const shotUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_PROOF_BYTES, files: 1 } });
+publicRoutes.post("/pay/:id/:ref/:token/proof", (req, res, next) => {
+  if (rateLimited(`payproof:${req.ip}`, 8, 10 * 60_000)) return res.status(429).send("Too many uploads. Wait a few minutes.");
+  shotUpload.single("shot")(req, res, (err: any) => (err ? res.status(400).send("That image is too large (max 3 MB).") : next()));
+}, async (req, res) => {
+  const ws = await getWorkspaceByPublicId(String(req.params.id));
+  const b = ws ? await getBooking(ws, String(req.params.ref)) : undefined;
+  if (!ws || !b || !safeEqual(String(req.params.token), payToken(ws, b.ref))) return res.status(404).send("Booking not found.");
+  const back = `/pay/${ws.public_id}/${b.ref}/${payToken(ws, b.ref)}`;
+  if (!req.file || b.pay_status !== "pending_manual") return res.redirect(303, back);
+  try {
+    const id = await saveProofImage(ws, `page:${b.ref}`, req.file.buffer, req.file.mimetype);
+    await submitCustomerProof(ws, b, id);
+  } catch (e: any) {
+    console.warn(`[proof ${ws.public_id}]`, e?.message);
+  }
+  res.redirect(303, back);
+});
+
 // ---------- Privacy policy (needed for Google sign-in review) ----------
 
 publicRoutes.get("/privacy", (_req, res) => {
   const name = env.appName.replace(/</g, "&lt;");
-  res.send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Privacy · ${name}</title>${ICON_LINKS.value}<link rel="stylesheet" href="/static/pay.css?v=1"><style>:root{--accent:#0a84ff}.pay{max-width:720px}h2{font-size:18px;margin-top:26px}p,li{color:var(--text-2)}</style></head><body><main class="pay">
+  res.send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Privacy · ${name}</title>${ICON_LINKS.value}<link rel="stylesheet" href="/static/pay.css?v=2"><style>:root{--accent:#0a84ff}.pay{max-width:720px}h2{font-size:18px;margin-top:26px}p,li{color:var(--text-2)}</style></head><body><main class="pay">
 <h1>Privacy policy</h1><p>${name} is a booking assistant for small businesses. This page explains what we store and why.</p>
 <h2>Google Calendar</h2><p>When a business signs in with Google, we only request permission to see free/busy times, list calendars they can edit, and create, change or remove the booking events we make. We use this solely to offer free slots and to add bookings (with an email invite to the customer and, for online sessions, a Google Meet link). We never read the content of other events, emails or files, never sell Google data, and don't use it for advertising or to train AI models. Our use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements. A business can disconnect at any time from its dashboard or at myaccount.google.com/permissions.</p>
 <h2>What we store</h2><ul><li>Business account details and settings entered by the business.</li><li>Conversation history with customers (kept up to 30 days) and booking records (name, phone, optional email, service, time, payment status).</li><li>Access keys the business provides (Claude, Google, Kapso, Razorpay), encrypted.</li></ul>

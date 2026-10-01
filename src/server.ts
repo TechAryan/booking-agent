@@ -11,6 +11,7 @@ import { adminRoutes } from "./routes/admin.js";
 import { setupRoutes } from "./routes/setup.js";
 import { extraRoutes } from "./routes/extras.js";
 import { sweepPayments } from "./bookings.js";
+import { purgeLoosePhotos } from "./proofs.js";
 import { db as _db } from "./db.js";
 
 const app = express();
@@ -77,7 +78,11 @@ async function main() {
     console.log(`🚀 ${env.appName} running at ${env.publicUrl} (port ${env.port}) · database: ${db.kind()}`);
     startKeepAlive();
     // Confirm payments whose webhook we missed and release slots whose payment link ran out.
-    const tick = () => sweepPayments((id) => _db.get("SELECT * FROM workspaces WHERE id=?", id)).catch((e) => console.error("payment sweep", e?.message));
+    let n = 0;
+    const tick = () => {
+      sweepPayments((id) => _db.get("SELECT * FROM workspaces WHERE id=?", id)).catch((e) => console.error("payment sweep", e?.message));
+      if (n++ % 60 === 0) purgeLoosePhotos().catch(() => undefined); // photos never linked to a booking: gone after 2 days
+    };
     setInterval(tick, Number(process.env.PAYMENT_SWEEP_MS || 60_000)).unref();
   });
 }

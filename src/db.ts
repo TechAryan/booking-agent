@@ -197,6 +197,25 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 CREATE INDEX IF NOT EXISTS payments_user ON payments(user_id, paid_on DESC);
 
+-- Payment screenshots: sent by customers (WhatsApp / pay page) or by the owner. Read by Claude to check amount, payee and UTR.
+CREATE TABLE IF NOT EXISTS payment_proofs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  booking_id INTEGER,                       -- set once it's linked to a booking
+  sender TEXT NOT NULL DEFAULT '',          -- wa:<phone>, owner:<phone>, pay-page
+  image TEXT NOT NULL,                      -- base64
+  mime TEXT NOT NULL DEFAULT 'image/jpeg',
+  caption TEXT NOT NULL DEFAULT '',
+  verdict TEXT NOT NULL DEFAULT 'unchecked',-- unchecked | ok | mismatch | unreadable | owner
+  amount INTEGER,
+  utr TEXT NOT NULL DEFAULT '',
+  payee TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS proofs_sender ON payment_proofs(workspace_id, sender, id DESC);
+CREATE INDEX IF NOT EXISTS proofs_booking ON payment_proofs(booking_id);
+
 -- What the business offers. price 0 (or empty) = free.
 CREATE TABLE IF NOT EXISTS services (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -323,6 +342,7 @@ const MIGRATIONS: [string, string, string][] = [
   ["workspaces", "razorpay_webhook_secret_enc", "TEXT"],
   ["workspaces", "upi_id", "TEXT NOT NULL DEFAULT ''"],
   ["workspaces", "upi_name", "TEXT NOT NULL DEFAULT ''"],
+  ["workspaces", "upi_auto_confirm", "INTEGER NOT NULL DEFAULT 0"], // confirm UPI bookings when the screenshot checks out
   // Owner control over WhatsApp
   ["workspaces", "owner_phones", "TEXT NOT NULL DEFAULT ''"],     // comma separated digits
   // Google sign-in (OAuth) instead of a service-account key
@@ -404,6 +424,7 @@ export interface Workspace {
   razorpay_webhook_secret_enc: string | null;
   upi_id: string;
   upi_name: string;
+  upi_auto_confirm: number;
   owner_phones: string;
   google_refresh_enc: string | null;
   google_account_email: string;

@@ -3,7 +3,7 @@ import multer from "multer";
 import { DateTime } from "luxon";
 import { checkCsrf, requireLogin } from "../auth.js";
 import { reply, resetConversation, testAnthropicKey } from "../agent.js";
-import { googleAuthUrl, googleExchange, googleRevoke, googleSignInEnabled, listWritableCalendars, parseServiceAccount, testCalendarFor } from "../calendar.js";
+import { missingGoogleScopes, googleAuthUrl, googleExchange, googleRevoke, googleSignInEnabled, listWritableCalendars, parseServiceAccount, testCalendarFor } from "../calendar.js";
 import { db, logActivity, Workspace } from "../db.js";
 import { env } from "../env.js";
 import { createWebhook, deleteWebhook, verifyKapso } from "../kapso.js";
@@ -13,6 +13,7 @@ import { decrypt, encrypt, mask, randomToken, rateLimited } from "../security.js
 import { html, raw, Safe } from "../views/html.js";
 import { icon, tile } from "../views/icons.js";
 import { csrfField, page, withMsg } from "../views/layout.js";
+import { stepNav } from "../views/stepper.js";
 import { CAT_MODE, CATEGORIES, TEMPLATES } from "../templates.js";
 import { inr, listServices, normIndian, ownerPhones, saveServices, Service } from "../catalog.js";
 
@@ -33,26 +34,6 @@ async function ws(req: Request): Promise<Workspace> {
 
 function isReady(w: Workspace) {
   return !!(w.business_done && w.claude_ok && w.google_ok);
-}
-
-function stepNav(active: string) {
-  const items = [
-    ["business", "Business"],
-    ["claude", "Claude"],
-    ["google", "Calendar"],
-    ["test", "Test"],
-    ["widget", "Widget"],
-    ["whatsapp", "WhatsApp"],
-  ];
-  const idx = items.findIndex(([k]) => k === active);
-  return html`<nav class="stepper" aria-label="Setup steps">
-    <a class="back" href="/">${raw('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>')} Dashboard</a>
-    <div class="track">${items.map(([k, l], i) =>
-      k === active
-        ? html`<b aria-current="step" class="${i < idx ? "past" : ""}">${l}</b>`
-        : html`<a href="/setup/${k}" class="${i < idx ? "past" : ""}">${l}</a>`
-    )}</div>
-  </nav>`;
 }
 
 // ---------- Dashboard ----------
@@ -113,7 +94,7 @@ setupRoutes.get("/", requireLogin, async (req, res) => {
   const R = 34, C = 2 * Math.PI * R;
   const hour = DateTime.now().setZone(w.timezone || "Asia/Kolkata").hour;
   const greet = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  const kindIcon: Record<string, string> = { booking: "calendar", cancel: "calendar", error: "bolt", setup: "check", message: "test" };
+  const kindIcon: Record<string, string> = { reschedule: "calendar", payment: "wallet", handoff: "bell", booking: "calendar", cancel: "calendar", error: "bolt", setup: "check", message: "test" };
   res.send(
     page(req, {
       title: "Dashboard",
@@ -172,7 +153,7 @@ setupRoutes.get("/", requireLogin, async (req, res) => {
         <div class="card list">
           ${act.length
             ? html`<ul class="feed">${act.map(
-                (a) => html`<li>${tile(kindIcon[a.kind] ?? "inbox")}<span class="grow"><b>${a.kind === "booking" ? "New booking" : a.kind === "cancel" ? "Cancelled" : a.kind === "error" ? "Problem" : "Update"}</b><small>${a.detail}</small></span><span class="when" title="${a.created_at} UTC">${ago(a.created_at)}</span></li>`
+                (a) => html`<li>${tile(kindIcon[a.kind] ?? "inbox")}<span class="grow"><b>${({ booking: "New booking", cancel: "Cancelled", error: "Problem", reschedule: "Moved", payment: "Payment", handoff: "Needs you" } as Record<string, string>)[a.kind] ?? "Update"}</b><small>${a.detail}</small></span><span class="when" title="${a.created_at} UTC">${ago(a.created_at)}</span></li>`
               )}</ul>`
             : html`<div class="empty">${tile("inbox", "lg")}<b>No activity yet</b><span>Bookings and cancellations will appear here as they happen.</span></div>`}
         </div>`,
@@ -207,7 +188,7 @@ setupRoutes.get("/setup/business", requireLogin, async (req, res) => {
   res.send(
     page(req, {
       title: "Business details",
-      body: html`${stepNav("business")}
+      body: html`${stepNav(req, "business", w)}
         <div class="page-head">${tile("business", "lg")}<div><p class="eyebrow">Step 1 of 4</p><h1>Business details</h1></div></div>
         <p class="sub">The assistant uses these to answer customers and to decide which slots are free.</p>
         ${quickStart(!!w.business_done)}
@@ -324,7 +305,7 @@ setupRoutes.get("/setup/claude", requireLogin, async (req, res) => {
     return res.send(
       page(req, {
         title: "Claude",
-        body: html`${stepNav("claude")}
+        body: html`${stepNav(req, "claude", w)}
           <div class="page-head">${tile("claude", "lg")}<div><p class="eyebrow">Step 2 of 4</p><h1>Claude is included</h1></div></div>
           <div class="card provided">
             <div class="done-line big">${tile("check", "lg")}<span><b>Nothing to do here</b><small>Your plan includes the AI. Your account manager has connected it for you, and usage is covered.</small></span></div>
@@ -337,7 +318,7 @@ setupRoutes.get("/setup/claude", requireLogin, async (req, res) => {
   res.send(
     page(req, {
       title: "Connect Claude",
-      body: html`${stepNav("claude")}
+      body: html`${stepNav(req, "claude", w)}
         <div class="page-head">${tile("claude", "lg")}<div><p class="eyebrow">Step 2 of 4</p><h1>Connect Claude</h1></div></div>
         <p class="sub">Claude is the AI that chats with your customers. You pay Anthropic directly for what it uses, usually a few rupees per conversation.</p>
         <div class="card">
@@ -391,6 +372,7 @@ setupRoutes.get("/setup/google", requireLogin, async (req, res) => {
   const viaGoogle = !!w.google_refresh_enc;
   let calendars: { id: string; name: string; primary: boolean }[] = [];
   let listError = "";
+  const missing = String(req.query.missing || "").split("|").map((x) => x.trim()).filter(Boolean).slice(0, 3);
   if (viaGoogle) {
     try { calendars = await listWritableCalendars(w); } catch (e: any) { listError = /invalid_grant/i.test(e?.message) ? "Google access was removed. Sign in again." : e?.message || "Couldn't load your calendars."; }
   }
@@ -438,9 +420,10 @@ setupRoutes.get("/setup/google", requireLogin, async (req, res) => {
   res.send(
     page(req, {
       title: "Connect Google Calendar",
-      body: html`${stepNav("google")}
+      body: html`${stepNav(req, "google", w)}
         <div class="page-head">${tile("calendar", "lg")}<div><p class="eyebrow">Step 3 of 4</p><h1>Connect Google Calendar</h1></div></div>
         <p class="sub">Bookings go into your Google Calendar, and times you're busy there are never offered to customers.${signIn ? " Customers also get an email invite, and online sessions get a Google Meet link." : ""}</p>
+        ${missing.length ? html`<div class="flash err inline">On Google's screen these were left unticked: <b>${missing.join(", ")}</b>. The assistant needs all of them. Sign in again and tick <b>Select all</b>.</div>` : ""}
         ${signIn
           ? html`<div class="card google-card">
               ${viaGoogle
@@ -458,8 +441,18 @@ setupRoutes.get("/setup/google", requireLogin, async (req, res) => {
                   </form>`
                 : html`<h2>One click, no setup</h2>
                   <p class="muted">Sign in with the Google account whose calendar you use. We only ask to see your free/busy times and add booking events. We never read your email.</p>
+                  <div class="consent-tip ${missing.length ? "warn" : ""}">
+                    <b>On Google's permission screen, tick <u>Select all</u></b>
+                    <div class="mock" aria-hidden="true">
+                      <span class="all"><i class="box on"></i>Select all</span>
+                      <span><i class="box on"></i>View and edit events on your calendars</span>
+                      <span><i class="box on"></i>See your free/busy times</span>
+                      <span><i class="box on"></i>See your list of calendars</span>
+                    </div>
+                    <small>Google asks you to tick these yourself (we're not allowed to pre-tick them). If one is missed, we'll tell you and you can just sign in again.</small>
+                  </div>
                   <div class="row">${googleBtn}</div>
-                  <details class="hint-box"><summary>Seeing “Google hasn't verified this app”?</summary><p>That's normal while our app is under Google's review. Click <b>Advanced</b>, then <b>Go to ${env.appName} (unsafe)</b>, then <b>Continue</b>. Tick every permission box on the next screen.</p></details>`}
+                  <details class="hint-box"><summary>Seeing “Google hasn't verified this app”?</summary><p>That's normal while our app is under Google's review. Click <b>Advanced</b>, then <b>Go to ${env.appName} (unsafe)</b>, then <b>Continue</b>. On the next screen tick <b>Select all</b>.</p></details>`}
             </div>
             <details class="card advanced-card" ${!viaGoogle && w.google_sa_email ? "open" : ""}>
               <summary><b>Use a service-account key instead</b><span class="hint">Advanced · no invites or Meet links</span></summary>
@@ -502,7 +495,12 @@ setupRoutes.get("/setup/google/callback", requireLogin, async (req, res) => {
   if (!req.csrf || req.query.state !== req.csrf) return res.redirect(withMsg(back, "err", "That sign-in link expired. Please try again."));
   try {
     const t = await googleExchange(String(req.query.code || ""));
-    if (!/calendar/.test(t.scopes) && t.scopes) throw new Error("Calendar permission wasn't given. Sign in again and tick all the boxes.");
+    const missing = missingGoogleScopes(t.scopes);
+    if (missing.length) {
+      // Google lets people untick boxes. Without all three we can't book reliably, so don't keep a half-working connection.
+      await googleRevoke(t.refreshToken);
+      return res.redirect(withMsg(`${back}?missing=${encodeURIComponent(missing.join("|"))}`, "err", "Some permissions were unticked. Please sign in again and tick all the boxes."));
+    }
     const w = await ws(req);
     const old = decrypt(w.google_refresh_enc);
     await updateWorkspace(w.id, { google_refresh_enc: encrypt(t.refreshToken), google_account_email: t.email, google_ok: 0 });
@@ -565,7 +563,7 @@ setupRoutes.get("/setup/test", requireLogin, async (req, res) => {
   res.send(
     page(req, {
       title: "Test your assistant",
-      body: html`${stepNav("test")}
+      body: html`${stepNav(req, "test", w)}
         <div class="page-head">${tile("test", "lg")}<div><p class="eyebrow">Step 4 of 4</p><h1>Test your assistant</h1></div></div>
         <p class="sub">Chat as if you were a customer. Try these, then book a real test slot and check it appears in your calendar.</p>
         ${block ?? html`
@@ -641,7 +639,7 @@ setupRoutes.get("/setup/widget", requireLogin, async (req, res) => {
   res.send(
     page(req, {
       title: "Website widget",
-      body: html`${stepNav("widget")}
+      body: html`${stepNav(req, "widget", w)}
         <div class="page-head">${tile("widget", "lg")}<div><p class="eyebrow">Channel · optional</p><h1>Website chat widget</h1></div></div>
         <p class="sub">Put the booking assistant on your own website. It uses the same calendar and settings.</p>
         ${block ?? html`
@@ -715,7 +713,7 @@ setupRoutes.get("/setup/whatsapp", requireLogin, async (req, res) => {
   res.send(
     page(req, {
       title: "Connect WhatsApp",
-      body: html`${stepNav("whatsapp")}
+      body: html`${stepNav(req, "whatsapp", w)}
         <div class="page-head">${tile("whatsapp", "lg")}<div><p class="eyebrow">Channel · optional</p><h1>Connect WhatsApp</h1></div></div>
         <p class="sub">Customers message your WhatsApp number and the assistant books them in. We use Kapso, an official WhatsApp Business partner. About 15 minutes.</p>
         ${block ?? html`

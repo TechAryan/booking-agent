@@ -36,6 +36,17 @@ export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/calendar.calendarlist.readonly", // let them pick which calendar
 ];
 
+/** The calendar permissions Google's screen lets people untick. Returns the friendly names of any that are missing. */
+export function missingGoogleScopes(granted: string): string[] {
+  const names: Record<string, string> = {
+    "https://www.googleapis.com/auth/calendar.events": "View and edit events",
+    "https://www.googleapis.com/auth/calendar.freebusy": "See your free/busy times",
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly": "See your list of calendars",
+  };
+  const have = new Set(granted.split(/\s+/));
+  return Object.keys(names).filter((s) => !have.has(s)).map((s) => names[s]!);
+}
+
 export function googleSignInEnabled() {
   return FAKE() || !!(env.googleClientId && env.googleClientSecret);
 }

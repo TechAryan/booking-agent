@@ -24,3 +24,12 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 -ap
 .qr { display: block; margin: 0 auto 8px; width: 240px; height: 240px; border-radius: 16px; background: #fff; padding: 10px; }
 .upi { text-align: center; color: var(--text-2); margin: 0 0 6px; }
 .fine { color: var(--text-2); font-size: 13px; text-align: center; }
+.proof { margin: 14px 0 6px; }
+.proof .file { position: relative; cursor: pointer; }
+.proof .file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.proof .file.busy { opacity: .7; pointer-events: none; }
+.note { border-radius: 14px; padding: 14px 16px; margin: 14px 0; background: var(--card); }
+.note b { display: block; margin-bottom: 4px; }
+.note p { margin: 0; color: var(--text-2); font-size: 14px; }
+.note.ok { border-left: 4px solid #34c759; }
+.note.bad { border-left: 4px solid #ff3b30; }

@@ -7,6 +7,15 @@ const log = (o) => fs.appendFileSync(LOG, JSON.stringify(o) + "\n");
 const tomorrow = () => new Date(Date.now() + 86400000 + 5.5 * 3600000).toISOString().slice(0, 10);
 
 function claude(j, key) {
+  // Reading a payment screenshot: the fake "image" is text like "amt=680;utr=111122223333;vpa=glow@okhdfcbank".
+  if (j.tool_choice?.name === "payment_details") {
+    const img = j.messages[0].content.find((c) => c.type === "image");
+    const t = Buffer.from(img.source.data, "base64").toString("utf8");
+    const f = Object.fromEntries(t.split(";").map((kv) => kv.split("=")));
+    return [200, msg([{ type: "tool_use", id: "pd", name: "payment_details", input: {
+      is_payment_screenshot: !("junk" in f), successful: f.ok !== "0", amount: f.amt ? Number(f.amt) : null, utr: f.utr || "", payee_upi_id: f.vpa || "", payee_name: f.name || "", paid_at: f.at || "",
+    } }], "tool_use")];
+  }
   if (j.tool_choice?.name === "save_business_profile") {
     const src = j.messages[0].content;
     return [200, msg([{ type: "tool_use", id: "tp", name: "save_business_profile", input: {
@@ -101,8 +110,12 @@ http.createServer((req, res) => {
       const [c, o] = claude(j, req.headers["x-api-key"]);
       return send(c, o);
     }
+    // Photo download: media id "media_<hex of the bytes>"
+    let mm;
+    if ((mm = req.url.match(/^\/media\/([0-9a-f]+)/))) { res.setHeader("Content-Type", "image/png"); return res.end(Buffer.from(mm[1], "hex")); }
     const k = req.headers["x-api-key"];
     log({ method: req.method, url: req.url, key: k, body: j });
+    if (req.method === "GET" && (mm = req.url.match(/\/meta\/whatsapp\/v[\d.]+\/media_([0-9a-f]+)/))) return send(200, { url: `http://localhost:4100/media/${mm[1]}`, mime_type: "image/png", id: `media_${mm[1]}` });
     if (k !== "kapso-good") return send(401, { error: "Unauthorized" });
     let m;
     if ((m = req.url.match(/^\/platform\/v1\/whatsapp\/phone_numbers\/(\d+)$/)) && req.method === "GET") {

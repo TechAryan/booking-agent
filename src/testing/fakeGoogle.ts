@@ -11,11 +11,13 @@ const nextYear = new Date().getFullYear() + 1;
 fakeEvents.push({ id: "hol1", calendarId: "en.indian#holiday@group.v.calendar.google.com", start: "", end: "", allDay: `${nextYear}-01-26`, summary: "Republic Day", priv: {} });
 fakeEvents.push({ id: "hol2", calendarId: "en.indian#holiday@group.v.calendar.google.com", start: "", end: "", allDay: `${nextYear}-08-15`, summary: "Independence Day", priv: {} });
 
+const GRANT_ALL = "openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.calendarlist.readonly";
 export const fakeOAuth = {
   authUrl: (state: string) => `${(process.env.PUBLIC_URL || "").replace(/\/+$/, "")}/setup/google/callback?code=fake-code&state=${encodeURIComponent(state)}`,
   exchange: async (code: string) => {
+    if (code === "fake-partial") return { refreshToken: "fake-refresh-partial", email: "owner@gmail.com", scopes: "openid email https://www.googleapis.com/auth/calendar.freebusy" };
     if (code !== "fake-code") throw new Error("invalid_grant");
-    return { refreshToken: "fake-refresh-token", email: "owner@gmail.com", scopes: "calendar" };
+    return { refreshToken: "fake-refresh-token", email: "owner@gmail.com", scopes: GRANT_ALL };
   },
 };
 

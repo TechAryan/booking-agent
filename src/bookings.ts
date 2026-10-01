@@ -92,11 +92,14 @@ export interface BookInput {
   phone: string;
   email?: string;
   mode?: string;          // online | offline (only matters when the service offers both)
-  payment?: string;       // online | venue (only for paid services)
+  payment?: string;       // online | venue | paid (paid = the owner already took the money)
   channel: string;
   owner: string;
   phoneVerified?: boolean; // true only for WhatsApp, where the number comes from WhatsApp itself
   paidInPerson?: boolean;  // owner added it and already took the money (cash/UPI)
+  byOwner?: boolean;       // the owner is booking for someone: their choice of payment wins over the usual rules
+  paidHow?: "cash" | "upi"; // with payment "paid"
+  amountPaid?: number;     // with payment "paid", if different from the price
 }
 
 export type BookResult =
@@ -134,13 +137,18 @@ async function bookLocked(ws: Workspace, i: BookInput): Promise<BookResult> {
   let amount = 0;
   if (credit) {
     method = "online"; amount = credit.amount;
+  } else if (!q.free && (i.payment === "paid" || i.paidInPerson)) {
+    // The owner already has the money.
+    method = i.paidHow === "upi" ? "upi" : "venue";
+    const given = Number(i.amountPaid);
+    amount = isFinite(given) && given > 0 ? Math.round(given) : method === "upi" ? q.online : q.venue;
   } else if (!q.free) {
-    // Paying at the venue only if the business allows it.
-    const wantOnline = i.payment === "online" || !ws.pay_at_venue;
+    // Paying at the venue only if the business allows it (the owner can always choose it).
+    const wantOnline = i.payment === "online" || (!ws.pay_at_venue && !i.byOwner);
     if (wantOnline) {
       if (razorpayReady(ws)) method = "online";
       else if (upiReady(ws)) method = "upi";
-      else if (ws.pay_at_venue) return { ok: false, message: "Online payment isn't available. The customer can pay at the venue instead." };
+      else if (ws.pay_at_venue || i.byOwner) return { ok: false, message: "Online payment isn't set up (Payments page). The customer can pay at the venue / later instead." };
       else return { ok: false, message: "This business hasn't set up payments yet. Tell the customer the team will contact them to confirm." };
       amount = q.online;
     } else {
@@ -159,15 +167,17 @@ async function bookLocked(ws: Workspace, i: BookInput): Promise<BookResult> {
   // --- Online via Razorpay: hold the slot, send a link, confirm when paid.
   if (method === "online" && !credit) {
     const ref = newRef();
+    // The owner has to forward the link first, so give those a bit longer.
+    const hold = i.byOwner ? 60 : HOLD_MINUTES;
     const res = await db.run(
       `INSERT INTO bookings (workspace_id, ref, owner, channel, customer_name, customer_phone, customer_email, service_id, service_name, start_at, end_at, mode, list_price, amount, pay_method, pay_status, status, hold_expires_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'awaiting','held',?)`,
       base.workspace_id, ref, base.owner, base.channel, base.customer_name, base.customer_phone, base.customer_email, base.service_id, base.service_name,
-      base.start_at, base.end_at, base.mode, base.list_price, base.amount, base.pay_method, Date.now() + HOLD_MINUTES * 60_000
+      base.start_at, base.end_at, base.mode, base.list_price, base.amount, base.pay_method, Date.now() + hold * 60_000
     );
     try {
       const link = await createPaymentLink(ws, {
-        amount, ref, expiresInMinutes: HOLD_MINUTES,
+        amount, ref, expiresInMinutes: hold,
         description: `${serviceName} · ${cal.fmt(free.start)} · ${ws.business_name}`,
         customer: { name: i.customerName, phone: i.phone, email },
         callbackUrl: payPageUrl(ws, ref),
@@ -175,8 +185,8 @@ async function bookLocked(ws: Workspace, i: BookInput): Promise<BookResult> {
       await setBooking(res.lastId, { payment_link_id: link.id, pay_url: link.url });
       await logActivity(ws.id, "payment", i.channel, `Payment link sent · ${ref} · ${inr(amount)} · ${i.customerName}`);
       return {
-        ok: true, status: "awaiting_payment", ref, when: cal.fmt(free.start), payUrl: link.url, amount, expiresInMinutes: HOLD_MINUTES,
-        message: `Slot held for ${HOLD_MINUTES} minutes. Send this link to pay ${inr(amount)}: ${link.url} . The booking is confirmed automatically once paid. Ref ${ref}.`,
+        ok: true, status: "awaiting_payment", ref, when: cal.fmt(free.start), payUrl: link.url, amount, expiresInMinutes: hold,
+        message: `Slot held for ${hold} minutes. Send this link to pay ${inr(amount)}: ${link.url} . The booking is confirmed automatically once paid. Ref ${ref}.`,
       };
     } catch (e: any) {
       await setBooking(res.lastId, { status: "cancelled", pay_status: "failed", note: `Link failed: ${e.message}`.slice(0, 300) });
@@ -186,8 +196,8 @@ async function bookLocked(ws: Workspace, i: BookInput): Promise<BookResult> {
   }
 
   // --- Everything else is booked right away (UPI stays "payment pending" until the owner confirms).
-  const pending = method === "upi";
-  const paidNow = !!i.paidInPerson && method === "venue";
+  const paidNow = !q.free && !credit && (i.payment === "paid" || !!i.paidInPerson);
+  const pending = method === "upi" && !paidNow;
   const ref = credit?.ref || newRef();
   let bookingId: number;
   if (credit) {
@@ -216,8 +226,9 @@ async function bookLocked(ws: Workspace, i: BookInput): Promise<BookResult> {
     return { ok: false, message: "Couldn't save the booking in the calendar right now. Please try again in a minute." };
   }
   const out = confirmation(ws, { ...b, ...ev });
-  await logActivity(ws.id, "booking", i.channel, `${b.customer_name} · ${serviceName} · ${cal.fmt(free.start)} · ${b.customer_phone}${amount ? ` · ${inr(amount)} ${method === "venue" ? "at venue" : method === "upi" ? "UPI pending" : "paid"}` : ""} · ${ref}`);
-  await notifyOwners(ws, `New booking ${ref}: ${b.customer_name}, ${serviceName}, ${cal.fmt(free.start)}${amount ? `, ${inr(amount)} ${method === "venue" ? "to pay at venue" : method === "upi" ? "UPI payment to confirm" : "paid"}` : ""}.`);
+  const payNote = !amount ? "" : paidNow ? `${inr(amount)} paid${method === "upi" ? " by UPI" : " in person"}` : method === "venue" ? `${inr(amount)} to pay ${mode === "online" ? "later" : "at venue"}` : method === "upi" ? `${inr(amount)} UPI to confirm` : `${inr(amount)} paid`;
+  await logActivity(ws.id, "booking", i.channel, `${b.customer_name} · ${serviceName} · ${cal.fmt(free.start)} · ${b.customer_phone}${payNote ? ` · ${payNote}` : ""} · ${ref}`);
+  if (!i.byOwner) await notifyOwners(ws, `New booking ${ref}: ${b.customer_name}, ${serviceName}, ${cal.fmt(free.start)}${payNote ? `, ${payNote}` : ""}.`);
   if (pending) {
     return { ...out, status: "pending_manual", payUrl: payPageUrl(ws, ref), amount,
       message: `Booked, payment pending. Ask them to pay ${inr(amount)} by UPI here: ${payPageUrl(ws, ref)} and send the payment screenshot. The team confirms it. Ref ${ref}.` };
@@ -234,7 +245,7 @@ function normEmail(e?: string) {
 async function placeEvent(ws: Workspace, cal: WorkspaceCalendar, b: Booking) {
   const online = b.mode === "online";
   const loc = online ? "" : [ws.address, mapsLink(ws)].filter(Boolean).join(" · ");
-  const payLine = b.pay_method === "free" ? "Free" : b.pay_method === "venue" ? (b.pay_status === "paid" ? `${inr(b.amount)} paid in person` : `${inr(b.amount)} to pay ${online ? "later (not paid yet)" : "at the venue"}`) : b.pay_status === "paid" ? `${inr(b.amount)} paid online` : `${inr(b.amount)} UPI payment pending`;
+  const payLine = b.pay_method === "free" ? "Free" : b.pay_method === "venue" ? (b.pay_status === "paid" ? `${inr(b.amount)} paid in person` : `${inr(b.amount)} to pay ${online ? "later (not paid yet)" : "at the venue"}`) : b.pay_status === "paid" ? `${inr(b.amount)} paid${b.pay_method === "upi" ? " by UPI" : " online"}` : `${inr(b.amount)} UPI payment pending`;
   const description = [
     `Booking ${b.ref} ${b.channel === "manual" ? "added by the business" : `via ${b.channel === "whatsapp" ? "WhatsApp" : b.channel === "widget" ? "website chat" : b.channel}`}`,
     `Name: ${b.customer_name}`, b.customer_phone ? `Phone: +${b.customer_phone}` : "", b.customer_email ? `Email: ${b.customer_email}` : "",
@@ -419,13 +430,13 @@ async function rescheduleLocked(ws: Workspace, b: Booking, newStart: string) {
   if (!f.ok) return { ok: false, message: `${cal.fmt(f.start)} isn't free.${f.result.slots.length ? " Free that day: " + f.result.slots.slice(0, 4).join(", ") : ""}` };
   if (b.event_id) await cal.updateEvent(b.event_id, { start: f.start, end: f.end });
   await setBooking(b.id, { start_at: f.start.toISO()!, end_at: f.end.toISO()! });
-  await logActivity(ws.id, "booking", b.channel, `Moved ${b.ref} to ${cal.fmt(f.start)} · ${b.customer_name}`);
+  await logActivity(ws.id, "reschedule", b.channel, `Moved ${b.ref} to ${cal.fmt(f.start)} · ${b.customer_name}`);
   await notifyOwners(ws, `🔁 ${b.customer_name} moved ${b.ref} (${b.service_name}) to ${cal.fmt(f.start)}.`);
   return { ok: true, message: `Moved to ${cal.fmt(f.start)}. Ref ${b.ref}.${b.customer_email && canInvite(ws) ? " The calendar invite was updated." : ""}` };
 }
 
 /** Owner confirms (or rejects) a UPI payment they checked in their bank app. */
-export async function confirmManualPayment(ws: Workspace, b: Booking, received: boolean) {
+export async function confirmManualPayment(ws: Workspace, b: Booking, received: boolean, opts: { quiet?: boolean } = {}) {
   if (b.pay_status !== "pending_manual") return { ok: false, message: "This booking isn't waiting for a UPI confirmation." };
   if (!received) {
     await cancelBooking(ws, b, "owner", "payment not received");
@@ -434,7 +445,7 @@ export async function confirmManualPayment(ws: Workspace, b: Booking, received: 
   await setBooking(b.id, { pay_status: "paid" });
   if (b.event_id) await new WorkspaceCalendar(ws).updateEvent(b.event_id, { summary: `${b.service_name} – ${b.customer_name}` }).catch(() => undefined);
   await logActivity(ws.id, "payment", b.channel, `UPI ${inr(b.amount)} confirmed · ${b.ref} · ${b.customer_name}`);
-  await notifyCustomer(ws, b, `✅ Payment of ${inr(b.amount)} confirmed. See you on ${whenText(ws, b.start_at)}! (ref ${b.ref})`);
+  if (!opts.quiet) await notifyCustomer(ws, b, `✅ Payment of ${inr(b.amount)} confirmed. See you on ${whenText(ws, b.start_at)}! (ref ${b.ref})`);
   return { ok: true, message: `Payment confirmed for ${b.ref}.` };
 }
 
@@ -473,9 +484,15 @@ async function sendWhatsApp(ws: Workspace, phone: string, text: string) {
   }
 }
 
+/** WhatsApp only allows free-form messages within 24h of the person's last message. Returns false if it didn't go. */
+export function tryWhatsApp(ws: Workspace, phone: string, text: string) {
+  return ws.whatsapp_enabled ? sendWhatsApp(ws, phone, text) : Promise.resolve(false);
+}
+
 /** Tells the customer in their chat (WhatsApp). Website-chat customers see it on the payment page instead. */
 export async function notifyCustomer(ws: Workspace, b: Booking, text: string) {
-  if (b.channel === "whatsapp" && ws.whatsapp_enabled) {
+  // Bookings the owner added (phone/walk-in) are tied to the customer's number, so WhatsApp works for them too.
+  if (["whatsapp", "phone", "manual"].includes(b.channel) && ws.whatsapp_enabled && b.customer_phone) {
     const ok = await sendWhatsApp(ws, b.customer_phone, text);
     await appendToChat(ws.id, "whatsapp", b.customer_phone, text);
     return ok;
