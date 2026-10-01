@@ -454,7 +454,7 @@ ok(outs.some((l) => l.body.to === "919700000000"), "normal customers still get t
 {
 // ================= v8: step bar, Google permissions, owner books for callers, payment screenshots =================
 r = await cu.page("/setup/google");
-ok(r.text.includes('class="sep"') && r.text.includes('href="/setup/payments"') && r.text.includes('href="/setup/holidays"') && r.text.includes("Optional"), "step bar shows the optional steps");
+ok(r.text.includes('href="/setup/payments"') && r.text.includes('href="/setup/holidays"') && r.text.includes("Optional"), "step bar shows the optional steps");
 r = await cu.req(`/setup/google/callback?code=fake-partial&state=${encodeURIComponent(cu.csrf)}`);
 ok(r.status === 302 && r.loc.includes("missing=") && dec(r.loc).includes("unticked"), "unticked Google permissions are caught", dec(r.loc));
 r = await cu.page(r.loc);

@@ -882,9 +882,12 @@ details.advanced-card > .card { box-shadow: none; background: var(--fill); margi
 .today .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 @media (max-width: 640px) { .today { grid-template-columns: 1fr; } }
 
-/* v8: step bar shows optional steps after a divider */
-.stepper .track a, .stepper .track b { display: inline-flex; align-items: center; gap: 4px; }
-.stepper .track .sep { align-self: center; padding: 0 6px 0 10px; margin-left: 4px; border-left: 1px solid var(--sep); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; }
+/* v8: step bar — all steps, wraps into even rows instead of scrolling; optional ones are quieter */
+.stepper { display: grid; justify-items: start; gap: 10px; }
+.stepper .track { justify-self: stretch; }
+.stepper .track { display: grid; align-content: start; grid-auto-rows: auto; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); margin-left: 0; overflow: visible; max-width: none; }
+@media (min-width: 780px) { .stepper .track { grid-template-columns: repeat(var(--n), minmax(0, 1fr)); } }
+.stepper .track a, .stepper .track b { display: inline-flex; align-items: center; justify-content: center; gap: 3px; text-align: center; padding: 6px 4px; }
 .stepper .track .opt:not(.past):not([aria-current]) { color: var(--text-3); }
 .consent-tip { margin: 14px 0; padding: 14px 16px; border-radius: 14px; background: var(--accent-soft); display: flex; flex-direction: column; gap: 10px; }
 .consent-tip.warn { background: color-mix(in srgb, var(--orange, #ff9500) 16%, transparent); }

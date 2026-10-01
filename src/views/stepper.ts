@@ -29,6 +29,6 @@ export function stepNav(req: Request, active: string, w?: Workspace) {
   };
   return html`<nav class="stepper" aria-label="Setup steps">
     <a class="back" href="/">${raw('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>')} Dashboard</a>
-    <div class="track">${required.map((s) => item(s, false))}<span class="sep" aria-hidden="true">Optional</span>${optional.map((s) => item(s, true))}</div>
+    <div class="track" style="--n:${required.length + optional.length}">${required.map((s) => item(s, false))}${optional.map((s) => item(s, true))}</div>
   </nav>`;
 }
