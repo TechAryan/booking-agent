@@ -121,6 +121,9 @@ http.createServer((req, res) => {
     if ((m = req.url.match(/^\/platform\/v1\/whatsapp\/phone_numbers\/(\d+)$/)) && req.method === "GET") {
       return m[1] === "111222333" ? send(200, { data: { phone_number_id: "111222333", display_phone_number: "+1 555 010 0101" } }) : send(404, { error: "Not found" });
     }
+    if (req.url.match(/^\/platform\/v1\/whatsapp\/phone_numbers\/\d+\/webhooks$/) && req.method === "GET") {
+      return send(200, { data: [{ id: "wh-stale", url: "http://localhost:3300/webhooks/kapso/ws_gone" }, { id: "wh-123", url: "http://localhost:3300/webhooks/kapso/x" }, { id: "wh-theirs", url: "https://other.example/hook" }] });
+    }
     if (req.url.match(/^\/platform\/v1\/whatsapp\/phone_numbers\/\d+\/webhooks$/) && req.method === "POST") {
       return send(201, { data: { id: "wh-123", ...j.whatsapp_webhook } });
     }

@@ -6,7 +6,7 @@ import { reply, resetConversation, testAnthropicKey } from "../agent.js";
 import { missingGoogleScopes, googleAuthUrl, googleExchange, googleRevoke, googleSignInEnabled, listWritableCalendars, parseServiceAccount, testCalendarFor } from "../calendar.js";
 import { db, logActivity, Workspace } from "../db.js";
 import { env } from "../env.js";
-import { createWebhook, deleteWebhook, verifyKapso } from "../kapso.js";
+import { createWebhook, deleteWebhook, listOurWebhooks, verifyKapso } from "../kapso.js";
 import { countPending } from "../bookings.js";
 import { getWorkspaceForUser, recentActivity, updateWorkspace } from "../models.js";
 import { decrypt, encrypt, mask, randomToken, rateLimited } from "../security.js";
@@ -720,8 +720,8 @@ setupRoutes.get("/setup/whatsapp", requireLogin, async (req, res) => {
           ${w.whatsapp_enabled
             ? html`<div class="flash ok">WhatsApp is live on <b>${w.kapso_display_number || w.kapso_phone_number_id}</b>. Send it a message to try it.</div>`
             : ""}
-          <div class="card">
-            <h2>Part A: create a Kapso account and connect a number</h2>
+          <details class="card advanced-card" ${w.whatsapp_enabled ? "" : "open"}>
+            <summary><b>Part A: create a Kapso account and connect a number</b>${w.whatsapp_enabled ? html`<span class="hint">Done · open to see the steps again</span>` : ""}</summary>
             <ol class="guide">
               <li>Sign up at <a href="https://app.kapso.ai" target="_blank" rel="noopener">app.kapso.ai</a>.</li>
               <li>Go to <b>Phone numbers</b> → <b>Set up</b>. You need a Facebook account for the next part. Then choose one:
@@ -736,14 +736,14 @@ setupRoutes.get("/setup/whatsapp", requireLogin, async (req, res) => {
               <li>Pick your number: a <b>+1 "Verified"</b> one for the US option, or enter your own number and type the code you get. Accept the permissions and click <b>Finish</b>.</li>
             </ol>
             <p class="hint">Just testing? Kapso has a free <b>Sandbox</b> number (no Facebook needed). Open it under Phone numbers → Sandbox sessions → Add session, enter your WhatsApp number, then send the activation code from that phone within a few minutes (codes expire).</p>
-          </div>
+          </details>
           <div class="card">
-            <h2>Part B: copy two values from Kapso</h2>
-            <ol class="guide">
+            <h2>${w.whatsapp_enabled ? "Connection" : "Part B: copy two values from Kapso"}</h2>
+            ${w.whatsapp_enabled ? "" : html`<ol class="guide">
               <li><b>Phone number ID</b>: in Kapso, open <b>Phone numbers</b>, click your number and copy <b>PHONE NUMBER ID</b>. It's a long number, not the phone number itself.</li>
               <li><b>API key</b>: in the left sidebar open <b>API keys → Create API key</b>, name it <code>booking-agent</code> and copy it. It's shown only once.</li>
               <li>Paste both below and click <b>Connect</b>. We set up everything else automatically.</li>
-            </ol>
+            </ol>`}
             <form method="post" action="/setup/whatsapp" data-busy="Connecting WhatsApp…">
               ${csrfField(req)}
               <label>Phone number ID</label>
@@ -801,6 +801,17 @@ setupRoutes.post("/setup/whatsapp", requireLogin, checkCsrf, async (req, res) =>
       const oldKey = decrypt(w.kapso_key_enc);
       if (oldKey) await deleteWebhook(oldKey, w.kapso_phone_number_id, w.kapso_webhook_id).catch(() => undefined);
     }
+    // One number answers for one business. If another account here was using it (common with Kapso's shared
+    // sandbox), switch that one off and remove its webhook, or customers would get two replies.
+    const others = await db.all<Workspace>("SELECT * FROM workspaces WHERE kapso_phone_number_id=? AND id<>? AND whatsapp_enabled=1", phoneId, w.id);
+    for (const o of others) {
+      const ok = decrypt(o.kapso_key_enc) || key;
+      if (o.kapso_webhook_id) await deleteWebhook(ok, phoneId, o.kapso_webhook_id).catch(() => undefined);
+      await updateWorkspace(o.id, { whatsapp_enabled: 0, kapso_webhook_id: null, kapso_webhook_secret_enc: null });
+      await logActivity(o.id, "setup", "whatsapp", "WhatsApp switched off: this number was connected to another account");
+    }
+    const stale = await listOurWebhooks(key, phoneId, `${env.publicUrl}/webhooks/kapso/`).catch(() => []);
+    for (const h of stale) if (h.id !== hook.id) await deleteWebhook(key, phoneId, h.id).catch(() => undefined);
     await updateWorkspace(w.id, {
       kapso_key_enc: encrypt(key),
       kapso_phone_number_id: phoneId,

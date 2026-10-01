@@ -564,6 +564,14 @@ ok(r.text.includes("Screenshot received") || r.text.includes("You're booked"), "
 const badUp = await fetch(`${BASE}${linkPay.replace(/\/[^/]+$/, "/wrongtoken")}/proof`, { method: "POST", body: (() => { const f = new FormData(); f.append("shot", new Blob(["x"], { type: "image/png" }), "s.png"); return f; })(), redirect: "manual" });
 ok(badUp.status === 404, "pay page upload needs the signed link");
 
+// Reconnecting cleans up our own stale webhooks on the number (shared sandbox), but leaves other apps' alone
+await cu.page("/setup/whatsapp");
+await cu.post("/setup/whatsapp", { phone_number_id: "111222333", api_key: "" });
+const dels = fakeLog().filter((l) => l.method === "DELETE").map((l) => l.url);
+ok(dels.some((u) => u.endsWith("/webhooks/wh-stale")) && !dels.some((u) => u.endsWith("/webhooks/wh-theirs")), "stale webhooks from this app removed, others kept", JSON.stringify(dels));
+r = await cu.page("/setup/whatsapp");
+ok(r.text.includes("Done · open to see the steps again") && r.text.includes(">Connection<"), "connected WhatsApp page folds the setup steps");
+
 // Walk-in form can send a payment link
 r = await cu.page("/bookings/new");
 ok(r.text.includes("Send a payment link"), "walk-in form offers a payment link");

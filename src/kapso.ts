@@ -54,6 +54,13 @@ export async function createWebhook(apiKey: string, phoneNumberId: string, url: 
   return { id: String(body?.data?.id ?? "") };
 }
 
+/** Webhooks on a number that point at our server (e.g. left behind by another account using the same sandbox number). */
+export async function listOurWebhooks(apiKey: string, phoneNumberId: string, ourPrefix: string): Promise<{ id: string; url: string }[]> {
+  const body = await platform(apiKey, `/whatsapp/phone_numbers/${encodeURIComponent(phoneNumberId)}/webhooks`);
+  const items: any[] = Array.isArray(body?.data) ? body.data : [];
+  return items.map((h) => ({ id: String(h.id ?? ""), url: String(h.url ?? "") })).filter((h) => h.id && h.url.startsWith(ourPrefix));
+}
+
 export async function deleteWebhook(apiKey: string, phoneNumberId: string, webhookId: string) {
   await platform(apiKey, `/whatsapp/phone_numbers/${encodeURIComponent(phoneNumberId)}/webhooks/${encodeURIComponent(webhookId)}`, {
     method: "DELETE",
