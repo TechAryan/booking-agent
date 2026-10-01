@@ -47,7 +47,7 @@ extraRoutes.get("/setup/profile", requireLogin, async (req, res) => {
     page(req, {
       title: "Profile & knowledge",
       body: html`${stepNav(req, "profile", w)}
-        ${head("profile", "Optional · everything here can be left blank", "Profile & knowledge")}
+        ${head("profile", "Optional · leave anything blank", "Profile & knowledge")}
         <p class="sub">Everything the assistant should know about your business: where you are, how to reach you, and any details it can use to answer questions.</p>
 
         <div class="card">

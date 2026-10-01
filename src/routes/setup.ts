@@ -189,7 +189,7 @@ setupRoutes.get("/setup/business", requireLogin, async (req, res) => {
     page(req, {
       title: "Business details",
       body: html`${stepNav(req, "business", w)}
-        <div class="page-head">${tile("business", "lg")}<div><p class="eyebrow">Step 1 of 4</p><h1>Business details</h1></div></div>
+        <div class="page-head">${tile("business", "lg")}<div><p class="eyebrow">Required</p><h1>Business details</h1></div></div>
         <p class="sub">The assistant uses these to answer customers and to decide which slots are free.</p>
         ${quickStart(!!w.business_done)}
         <div class="card">
@@ -306,7 +306,7 @@ setupRoutes.get("/setup/claude", requireLogin, async (req, res) => {
       page(req, {
         title: "Claude",
         body: html`${stepNav(req, "claude", w)}
-          <div class="page-head">${tile("claude", "lg")}<div><p class="eyebrow">Step 2 of 4</p><h1>Claude is included</h1></div></div>
+          <div class="page-head">${tile("claude", "lg")}<div><p class="eyebrow">Required</p><h1>Claude is included</h1></div></div>
           <div class="card provided">
             <div class="done-line big">${tile("check", "lg")}<span><b>Nothing to do here</b><small>Your plan includes the AI. Your account manager has connected it for you, and usage is covered.</small></span></div>
             <div class="row"><a class="btn" href="${w.google_ok ? "/" : "/setup/google"}">Continue ${icon("chevron", 14)}</a></div>
@@ -319,7 +319,7 @@ setupRoutes.get("/setup/claude", requireLogin, async (req, res) => {
     page(req, {
       title: "Connect Claude",
       body: html`${stepNav(req, "claude", w)}
-        <div class="page-head">${tile("claude", "lg")}<div><p class="eyebrow">Step 2 of 4</p><h1>Connect Claude</h1></div></div>
+        <div class="page-head">${tile("claude", "lg")}<div><p class="eyebrow">Required</p><h1>Connect Claude</h1></div></div>
         <p class="sub">Claude is the AI that chats with your customers. You pay Anthropic directly for what it uses, usually a few rupees per conversation.</p>
         <div class="card">
           <h2>Get your API key (5 minutes)</h2>
@@ -421,7 +421,7 @@ setupRoutes.get("/setup/google", requireLogin, async (req, res) => {
     page(req, {
       title: "Connect Google Calendar",
       body: html`${stepNav(req, "google", w)}
-        <div class="page-head">${tile("calendar", "lg")}<div><p class="eyebrow">Step 3 of 4</p><h1>Connect Google Calendar</h1></div></div>
+        <div class="page-head">${tile("calendar", "lg")}<div><p class="eyebrow">Required</p><h1>Connect Google Calendar</h1></div></div>
         <p class="sub">Bookings go into your Google Calendar, and times you're busy there are never offered to customers.${signIn ? " Customers also get an email invite, and online sessions get a Google Meet link." : ""}</p>
         ${missing.length ? html`<div class="flash err inline">On Google's screen these were left unticked: <b>${missing.join(", ")}</b>. The assistant needs all of them. Sign in again and tick <b>Select all</b>.</div>` : ""}
         ${signIn
@@ -564,7 +564,7 @@ setupRoutes.get("/setup/test", requireLogin, async (req, res) => {
     page(req, {
       title: "Test your assistant",
       body: html`${stepNav(req, "test", w)}
-        <div class="page-head">${tile("test", "lg")}<div><p class="eyebrow">Step 4 of 4</p><h1>Test your assistant</h1></div></div>
+        <div class="page-head">${tile("test", "lg")}<div><p class="eyebrow">Required</p><h1>Test your assistant</h1></div></div>
         <p class="sub">Chat as if you were a customer. Try these, then book a real test slot and check it appears in your calendar.</p>
         ${block ?? html`
           <div class="suggest">

@@ -735,3 +735,13 @@
   });
   add("b", "Hi! I'm your booking assistant. Try a suggestion above, or type anything.");
 })();
+
+// Setup "All steps" menu: close on outside tap or Escape.
+document.addEventListener("click", function (e) {
+  var d = document.querySelector("details.sn-menu[open]");
+  if (d && !d.querySelector(".sn-panel").contains(e.target) && !d.querySelector("summary").contains(e.target)) d.open = false;
+});
+document.addEventListener("keydown", function (e) {
+  if (e.key === "Escape") document.querySelectorAll("details.sn-menu[open]").forEach(function (d) { d.open = false; });
+});
+
