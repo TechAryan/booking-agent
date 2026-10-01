@@ -217,7 +217,7 @@ async function userForm(req: Request, v: FormValues | null, id?: number) {
         <div>
           <label>Valid until <span class="hint">empty = no expiry</span></label>
           <input type="date" name="valid_until" value="${v ? v.validUntil ?? "" : DateTime.now().plus({ days: 30 }).toISODate()}">
-          <div class="quick-dates" data-quick-dates>
+          <div class="quick-dates" data-quick-dates ${v ? "" : html`data-base="${todayIST()}"`}>
             ${[["+7d", "1 week"], ["+1m", "1 month"], ["+3m", "3 months"], ["+1y", "1 year"]].map(([k, l]) => html`<button type="button" class="chip" data-add="${k}">${l}</button>`)}
           </div>
         </div>

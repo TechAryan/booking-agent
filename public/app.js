@@ -328,13 +328,14 @@
     var days = Array.prototype.filter.call(f.querySelectorAll("[name=days]"), function (x) { return x.checked; }).length;
     if (!(c > o)) { slotBox.className = "slot-preview warn"; slotBox.textContent = "Closing time must be after opening time."; return; }
     var slots = [], t = o * 60;
-    while (t + len <= c * 60) { slots.push(fmt(Math.floor(t / 60), t % 60)); t += len; }
+    var step = Math.min(len, 30);
+    while (t + len <= c * 60) { slots.push(fmt(Math.floor(t / 60), t % 60)); t += step; }
     slotBox.className = "slot-preview";
     slotBox.innerHTML = "";
     var head = doc.createElement("div"); head.className = "sp-head";
     head.innerHTML = "<b></b><span></span>";
     head.querySelector("b").textContent = "Customers will see";
-    head.querySelector("span").textContent = slots.length + " slots a day · " + days + " day" + (days === 1 ? "" : "s") + " a week";
+    head.querySelector("span").textContent = slots.length + " start times a day · " + days + " day" + (days === 1 ? "" : "s") + " a week";
     slotBox.appendChild(head);
     var row = doc.createElement("div"); row.className = "sp-row";
     slots.slice(0, 10).forEach(function (x, i) { var chip = doc.createElement("span"); chip.textContent = x; chip.style.animationDelay = (i * 25) + "ms"; row.appendChild(chip); });
@@ -494,6 +495,14 @@
     pp.querySelector("[data-online-price]").textContent = "₹" + Math.round(base * (1 - d / 100)).toLocaleString("en-IN") + " online";
   });
 
+  // Link fields: accept "instagram.com/me" and add https:// for the person.
+  doc.addEventListener("blur", function (e) {
+    var i = e.target;
+    if (!i || !i.matches || !i.matches("input[data-url]")) return;
+    var v = i.value.trim();
+    if (v && !/^[a-z][a-z0-9+.-]*:\/\//i.test(v) && /^[\w-]+(\.[\w-]+)+/.test(v)) i.value = "https://" + v;
+  }, true);
+
   // ---------------------------------------------------------------- booking forms: live free-slot picker (v8)
   doc.querySelectorAll("[data-slot-form]").forEach(function (form) {
     var date = form.querySelector("[data-slot-date]"), box = form.querySelector("[data-slot-pick]"), time = form.querySelector("[data-slot-time]");
@@ -561,10 +570,12 @@
   doc.querySelectorAll("[data-quick-dates]").forEach(function (box) {
     var input = box.parentNode.querySelector("input[type=date]") || (box.closest(".grid") && box.closest(".grid").querySelector("input[type=date]"));
     if (!input) return;
+    var orig = input.value;
     box.addEventListener("click", function (e) {
       var b = e.target.closest("[data-add]"); if (!b) return;
       var t = addPeriod("", "+0d");
-      var base = box.getAttribute("data-base") || (input.value && input.value >= t ? input.value : t);
+      // Always count from the same starting point, so clicking twice doesn't add up.
+      var base = box.getAttribute("data-base") || (orig && orig >= t ? orig : t);
       input.value = addPeriod(base, b.getAttribute("data-add"));
       input.classList.remove("flash-fill"); void input.offsetWidth; input.classList.add("flash-fill");
       box.querySelectorAll(".chip").forEach(function (x) { x.classList.toggle("on", x === b); });

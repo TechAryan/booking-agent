@@ -303,7 +303,9 @@ export class WorkspaceCalendar {
     const earliest = this.now().plus({ minutes: 30 });
     const busy = await this.busy(open, close, ignoreBookingId);
     const slots: string[] = [];
-    for (let s = open; s.plus({ minutes }) <= close; s = s.plus({ minutes: h.slotMinutes })) {
+    // Start times every 30 min at most (so "2 pm" exists even with 45-min appointments); shorter slot lengths keep their own step.
+    const step = Math.min(h.slotMinutes, 30);
+    for (let s = open; s.plus({ minutes }) <= close; s = s.plus({ minutes: step })) {
       const e = s.plus({ minutes });
       if (s < earliest) continue;
       if (!busy.some((b) => s < b.end && e > b.start)) slots.push(s.toFormat("HH:mm"));

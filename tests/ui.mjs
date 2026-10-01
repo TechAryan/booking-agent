@@ -155,9 +155,9 @@ await shot("07a-business-types");
 await page.click('.template >> text=Dental clinic');
 ok((await page.$$eval("input[name=svc_name]", (els) => els.map((e) => e.value).join(", "))).includes("Tooth filling"), "Dental template fills service rows");
 ok((await page.inputValue("select[name=slot_minutes]")) === "30", "template sets appointment length");
-ok((await page.textContent("[data-slot-preview]")).includes("18 slots a day"), "live slot preview (10am–7pm, 30 min = 18 slots)");
+ok((await page.textContent("[data-slot-preview]")).includes("18 start times a day"), "live slot preview (10am–7pm, 30 min = 18 start times)");
 await page.selectOption("select[name=slot_minutes]", "60");
-ok((await page.textContent("[data-slot-preview]")).includes("9 slots a day"), "slot preview updates when length changes");
+ok((await page.textContent("[data-slot-preview]")).includes("17 start times a day"), "slot preview updates when length changes (60 min, every 30 min)");
 await page.fill("input[name=business_name]", "Smile Dental");
 // Services editor: add, set paid, open details, remove.
 const nRows = await page.locator("[data-svc-row]").count();

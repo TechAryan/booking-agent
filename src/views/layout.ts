@@ -51,7 +51,7 @@ ${u ? "" : html`<div class="mesh" aria-hidden="true"><i></i><i></i><i></i></div>
   ${opts.body}
 </main>
 <div class="toasts" id="toasts" aria-live="polite"></div>
-<script src="/static/app.js?v=13"></script>
+<script src="/static/app.js?v=16"></script>
 </body>
 </html>`.toString();
 }

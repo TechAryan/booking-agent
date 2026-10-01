@@ -144,7 +144,8 @@ async function bookLocked(ws: Workspace, i: BookInput): Promise<BookResult> {
       else return { ok: false, message: "This business hasn't set up payments yet. Tell the customer the team will contact them to confirm." };
       amount = q.online;
     } else {
-      if (!i.payment) return { ok: false, message: `Ask how they want to pay: online ${inr(q.online)}${q.onlineDiscountPct ? ` (${q.onlineDiscountPct}% off)` : ""} or at the venue ${inr(q.venue)}.` };
+      const canOnline = razorpayReady(ws) || upiReady(ws);
+      if (!i.payment && canOnline) return { ok: false, message: `Ask how they want to pay: online now ${inr(q.online)}${q.onlineDiscountPct ? ` (${q.onlineDiscountPct}% off)` : ""} or ${mode === "online" ? "later" : "at the venue"} ${inr(q.venue)}.` };
       method = "venue"; amount = q.venue;
     }
   }
@@ -233,7 +234,7 @@ function normEmail(e?: string) {
 async function placeEvent(ws: Workspace, cal: WorkspaceCalendar, b: Booking) {
   const online = b.mode === "online";
   const loc = online ? "" : [ws.address, mapsLink(ws)].filter(Boolean).join(" · ");
-  const payLine = b.pay_method === "free" ? "Free" : b.pay_method === "venue" ? (b.pay_status === "paid" ? `${inr(b.amount)} paid in person` : `${inr(b.amount)} to pay at the venue`) : b.pay_status === "paid" ? `${inr(b.amount)} paid online` : `${inr(b.amount)} UPI payment pending`;
+  const payLine = b.pay_method === "free" ? "Free" : b.pay_method === "venue" ? (b.pay_status === "paid" ? `${inr(b.amount)} paid in person` : `${inr(b.amount)} to pay ${online ? "later (not paid yet)" : "at the venue"}`) : b.pay_status === "paid" ? `${inr(b.amount)} paid online` : `${inr(b.amount)} UPI payment pending`;
   const description = [
     `Booking ${b.ref} ${b.channel === "manual" ? "added by the business" : `via ${b.channel === "whatsapp" ? "WhatsApp" : b.channel === "widget" ? "website chat" : b.channel}`}`,
     `Name: ${b.customer_name}`, b.customer_phone ? `Phone: +${b.customer_phone}` : "", b.customer_email ? `Email: ${b.customer_email}` : "",
@@ -260,7 +261,7 @@ function confirmation(ws: Workspace, b: Booking & { invited?: boolean }): BookRe
   const parts = [`Booked ${b.service_name} for ${b.customer_name} on ${when}. Ref ${b.ref}.`];
   if (online) parts.push(b.meet_link ? `Online session link: ${b.meet_link}` : "It's online; the business will share the joining link.");
   else if (ws.address) parts.push(`Address: ${ws.address}${mapsLink(ws) ? ` · Map: ${mapsLink(ws)}` : ""}`);
-  if (b.pay_method === "venue" && b.pay_status !== "paid") parts.push(`Pay ${inr(b.amount)} at the venue.`);
+  if (b.pay_method === "venue" && b.pay_status !== "paid") parts.push(online ? `Pay ${inr(b.amount)} later; ${ws.business_name} will share how.` : `Pay ${inr(b.amount)} at the venue.`);
   if (b.invited) parts.push(`A calendar invite was emailed to ${b.customer_email}.`);
   else if (b.customer_email && !canInvite(ws)) parts.push("(Email invites aren't switched on for this business.)");
   return {

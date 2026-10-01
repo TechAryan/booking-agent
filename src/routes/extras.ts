@@ -59,14 +59,14 @@ extraRoutes.get("/setup/profile", requireLogin, async (req, res) => {
             <label>Address <span class="hint">sent to customers who book in person</span></label>
             <textarea name="address" rows="2" maxlength="400" placeholder="12 MG Road, 2nd floor, Indiranagar, Bengaluru 560038" data-address>${w.address}</textarea>
             <label>Google Maps link <span class="hint">optional · if empty we make one from your address</span></label>
-            <input type="url" name="maps_url" value="${w.maps_url}" placeholder="https://maps.app.goo.gl/…" maxlength="300">
+            <input type="text" inputmode="url" autocapitalize="off" spellcheck="false" data-url name="maps_url" value="${w.maps_url}" placeholder="https://maps.app.goo.gl/…" maxlength="300">
             <p class="hint" data-map-preview>${map ? html`Customers will get: <a href="${map}" target="_blank" rel="noopener">${w.maps_url ? "your map link" : "a map search for your address"} ↗</a>` : "Add an address to share a map link."}</p>
             <label>Online meeting link <span class="hint">only needed without Google sign-in: your fixed Zoom / Meet room</span></label>
-            <input type="url" name="meeting_link" value="${w.meeting_link}" placeholder="https://meet.google.com/abc-defg-hij" maxlength="300">
+            <input type="text" inputmode="url" autocapitalize="off" spellcheck="false" data-url name="meeting_link" value="${w.meeting_link}" placeholder="https://meet.google.com/abc-defg-hij" maxlength="300">
             <h3>Website & social</h3>
             <div class="grid">
-              <div><label>Website</label><input type="url" name="website" value="${w.website}" placeholder="https://yourbusiness.com" maxlength="300"></div>
-              ${SOCIALS.map(([k, l]) => html`<div><label>${l}</label><input type="url" name="social_${k}" value="${socials[k] ?? ""}" placeholder="${k === "instagram" ? "https://instagram.com/yourname" : k === "youtube" ? "https://youtube.com/@yourchannel" : "https://…"}" maxlength="300"></div>`)}
+              <div><label>Website</label><input type="text" inputmode="url" autocapitalize="off" spellcheck="false" data-url name="website" value="${w.website}" placeholder="https://yourbusiness.com" maxlength="300"></div>
+              ${SOCIALS.map(([k, l]) => html`<div><label>${l}</label><input type="text" inputmode="url" autocapitalize="off" spellcheck="false" data-url name="social_${k}" value="${socials[k] ?? ""}" placeholder="${k === "instagram" ? "https://instagram.com/yourname" : k === "youtube" ? "https://youtube.com/@yourchannel" : "https://…"}" maxlength="300"></div>`)}
             </div>
             <div class="row"><button>Save</button></div>
           </form>
@@ -78,7 +78,7 @@ extraRoutes.get("/setup/profile", requireLogin, async (req, res) => {
           <form method="post" action="/setup/profile/import" data-busy="Reading your website… this can take a minute">
             ${csrfField(req)}
             <label>Website to read</label>
-            <input type="url" name="url" value="${w.website}" placeholder="https://yourbusiness.com" required>
+            <input type="text" inputmode="url" autocapitalize="off" spellcheck="false" data-url name="url" value="${w.website}" placeholder="https://yourbusiness.com" required>
             <div class="row"><button>${w.claude_ok ? "Import" : "Import (connect Claude first)"}</button></div>
           </form>
         </div>
