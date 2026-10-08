@@ -499,6 +499,7 @@ ok(r.text.includes("₹750 paid (UPI)") && r.text.includes("Your payment proof")
 const proofHref = r.text.match(new RegExp(`/bookings/${paidRef}/proof/(\\d+)`))?.[0];
 r = await cu.req(proofHref || "/x");
 ok(r.status === 200 && r.text === "owner-proof", "proof image opens for the owner");
+if (process.env.R2_ENDPOINT) ok(fakeLog().some((l) => l.r2 === "PUT" && /^booking-agent-files\/proofs\/\d+\/.+\.png$/.test(l.key)) && fakeLog().some((l) => l.r2 === "GET"), "photos are stored in R2 file storage and read back from it");
 r = await anon.req(proofHref || "/x");
 ok(r.status === 302 || r.status === 401, "proof image needs login");
 o8 = resultOf(await ownerSay(`!tool attach_payment_proof {"ref":"${paidRef}"}`));

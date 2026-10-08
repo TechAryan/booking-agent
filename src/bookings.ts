@@ -1,12 +1,13 @@
 import crypto from "node:crypto";
 import { DateTime } from "luxon";
-import { db, logActivity, Workspace } from "./db.js";
+import { db, logActivity, TxQ, Workspace } from "./db.js";
 import { env } from "./env.js";
 import { canInvite, WorkspaceCalendar } from "./calendar.js";
 import { findService, inr, listServices, mapsLink, ownerPhones, quote, Quote, Service } from "./catalog.js";
 import { cancelPaymentLink, createPaymentLink, fetchPaymentLink, razorpayReady, upiReady } from "./payments.js";
 import { sendText } from "./kapso.js";
 import { decrypt, hmacHex } from "./security.js";
+import { enqueue, onJob } from "./jobs.js";
 
 export const HOLD_MINUTES = 20; // how long a slot waits for an online payment
 
@@ -121,6 +122,22 @@ export type BookResult =
   | { ok: false; message: string; slots?: string[] }
   | { ok: true; status: "confirmed" | "awaiting_payment" | "pending_manual"; ref: string; when: string; message: string; payUrl?: string; amount?: number; meetLink?: string; location?: string; mapsLink?: string; invite?: string; expiresInMinutes?: number };
 
+/**
+ * The double-booking guard: checks no active booking overlaps [start, end) and writes, in ONE database
+ * transaction. Works across several app servers (the in-memory lock only covers one). Returns null on a clash.
+ * Times are ISO strings in the business's own zone, so they compare correctly as text within one business.
+ */
+export async function guardedWrite<T>(wsId: number, start: string, end: string, excludeId: number | null, write: (q: TxQ) => Promise<T>): Promise<T | null> {
+  return db.tx(async (q) => {
+    const clash = await q.get(
+      "SELECT 1 FROM bookings WHERE workspace_id=? AND status IN ('held','confirmed') AND start_at < ? AND end_at > ? AND id IS NOT ? LIMIT 1",
+      wsId, end, start, excludeId
+    );
+    return clash ? null : write(q);
+  });
+}
+const SLOT_TAKEN = (cal: WorkspaceCalendar, start: DateTime): BookResult => ({ ok: false, message: `Sorry, ${cal.fmt(start)} was just taken by someone else. Please pick another time.` });
+
 export function book(ws: Workspace, i: BookInput): Promise<BookResult> {
   return withLock(ws.id, () => bookLocked(ws, i));
 }
@@ -184,12 +201,13 @@ async function bookLocked(ws: Workspace, i: BookInput): Promise<BookResult> {
     const ref = newRef();
     // The owner has to forward the link first, so give those a bit longer.
     const hold = i.byOwner ? 60 : HOLD_MINUTES;
-    const res = await db.run(
+    const res = await guardedWrite(ws.id, base.start_at, base.end_at, null, (q) => q.run(
       `INSERT INTO bookings (workspace_id, ref, owner, channel, customer_name, customer_phone, customer_email, service_id, service_name, start_at, end_at, mode, list_price, amount, pay_method, pay_status, status, hold_expires_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'awaiting','held',?)`,
       base.workspace_id, ref, base.owner, base.channel, base.customer_name, base.customer_phone, base.customer_email, base.service_id, base.service_name,
       base.start_at, base.end_at, base.mode, base.list_price, base.amount, base.pay_method, Date.now() + hold * 60_000
-    );
+    ));
+    if (!res) return SLOT_TAKEN(cal, free.start);
     try {
       const link = await createPaymentLink(ws, {
         amount, ref, expiresInMinutes: hold,
@@ -198,6 +216,7 @@ async function bookLocked(ws: Workspace, i: BookInput): Promise<BookResult> {
         callbackUrl: payPageUrl(ws, ref),
       });
       await setBooking(res.lastId, { payment_link_id: link.id, pay_url: link.url });
+      await enqueue(ws.id, "payment_check", ref, Date.now() + PAYMENT_POLL_MS);
       await logActivity(ws.id, "payment", i.channel, `Payment link sent · ${ref} · ${inr(amount)} · ${i.customerName}`);
       return {
         ok: true, status: "awaiting_payment", ref, when: cal.fmt(free.start), payUrl: link.url, amount, expiresInMinutes: hold,
@@ -216,17 +235,19 @@ async function bookLocked(ws: Workspace, i: BookInput): Promise<BookResult> {
   const ref = credit?.ref || newRef();
   let bookingId: number;
   if (credit) {
-    const claimed = await db.run("UPDATE bookings SET status='confirmed', start_at=?, end_at=?, mode=?, customer_email=?, updated_at=datetime('now') WHERE id=? AND status='paid_unbooked'",
-      base.start_at, base.end_at, mode, email || credit.customer_email, credit.id);
+    const claimed = await guardedWrite(ws.id, base.start_at, base.end_at, credit.id, (q) => q.run("UPDATE bookings SET status='confirmed', start_at=?, end_at=?, mode=?, customer_email=?, updated_at=datetime('now') WHERE id=? AND status='paid_unbooked'",
+      base.start_at, base.end_at, mode, email || credit.customer_email, credit.id));
+    if (!claimed) return SLOT_TAKEN(cal, free.start);
     if (!claimed.changes) return { ok: false, message: "That earlier payment was just used for another booking. Check list_my_appointments." };
     bookingId = credit.id;
   } else {
-    const r = await db.run(
+    const r = await guardedWrite(ws.id, base.start_at, base.end_at, null, (q) => q.run(
       `INSERT INTO bookings (workspace_id, ref, owner, channel, customer_name, customer_phone, customer_email, service_id, service_name, start_at, end_at, mode, list_price, amount, pay_method, pay_status, status)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'confirmed')`,
       base.workspace_id, ref, base.owner, base.channel, base.customer_name, base.customer_phone, base.customer_email, base.service_id, base.service_name,
       base.start_at, base.end_at, base.mode, base.list_price, base.amount, base.pay_method, pending ? "pending_manual" : paidNow ? "paid" : "none"
-    );
+    ));
+    if (!r) return SLOT_TAKEN(cal, free.start);
     bookingId = r.lastId;
   }
   const b = (await db.get<Booking>("SELECT * FROM bookings WHERE id=?", bookingId))!;
@@ -376,23 +397,32 @@ async function expireBooking(ws: Workspace, b: Booking, tell: boolean) {
   if (tell) await notifyCustomer(ws, b, `The payment link for ${b.service_name} on ${whenText(ws, b.start_at)} expired, so the slot was released. Reply if you'd like a new link${ws.pay_at_venue ? " or to pay at the venue" : ""}.`);
 }
 
-/** Runs every minute: confirms payments whose webhook we missed, releases slots whose link ran out. */
-export async function sweepPayments(loadWs: (id: number) => Promise<Workspace | undefined>) {
-  const rows = await db.all<Booking>("SELECT * FROM bookings WHERE status='held' AND pay_status='awaiting' ORDER BY id LIMIT 200");
+/** How often an unpaid link is checked with Razorpay, in case its webhook never reached us. */
+const PAYMENT_POLL_MS = Number(process.env.PAYMENT_POLL_MS || process.env.PAYMENT_SWEEP_MS || 60_000);
+
+/**
+ * One job per held booking: confirms a payment whose webhook we missed, and releases the slot once the link
+ * has run out (plus 2 minutes' grace for a slow bank). Keeps polling until one of those happens.
+ */
+onJob("payment_check", async (job) => {
+  const b = await getBooking({ id: job.workspace_id } as Workspace, job.ref);
+  if (!b || b.status !== "held" || b.pay_status !== "awaiting") return;
+  const ws = await db.get<Workspace>("SELECT * FROM workspaces WHERE id=?", job.workspace_id);
+  if (!ws) return;
+  if (b.payment_link_id && razorpayReady(ws)) {
+    const link = await fetchPaymentLink(ws, b.payment_link_id);
+    if (link.status === "paid") { await markPaid(ws, b, link.paymentId, "poll"); return; }
+    if (link.status === "expired" || link.status === "cancelled") { await expireBooking(ws, b, true); return; }
+  }
+  if (b.hold_expires_at && Date.now() > b.hold_expires_at + 2 * 60_000) { await expireBooking(ws, b, true); return; }
+  return { again: PAYMENT_POLL_MS };
+});
+
+/** Bookings held before jobs existed get their check job (runs once at startup; no-op afterwards). */
+export async function backfillPaymentChecks() {
+  const rows = await db.all<Booking>("SELECT workspace_id, ref FROM bookings WHERE status='held' AND pay_status='awaiting'");
   for (const b of rows) {
-    const ws = await loadWs(b.workspace_id);
-    if (!ws) continue;
-    try {
-      if (b.payment_link_id && razorpayReady(ws)) {
-        const link = await fetchPaymentLink(ws, b.payment_link_id);
-        if (link.status === "paid") { await markPaid(ws, b, link.paymentId, "poll"); continue; }
-        if (link.status === "expired" || link.status === "cancelled") { await expireBooking(ws, b, true); continue; }
-      }
-      // Give a slow bank 2 extra minutes after the hold before letting the slot go.
-      if (b.hold_expires_at && Date.now() > b.hold_expires_at + 2 * 60_000) await expireBooking(ws, b, true);
-    } catch (e: any) {
-      console.error(`[payments ${b.ref}]`, e?.message);
-    }
+    await db.run("INSERT OR IGNORE INTO jobs (workspace_id, kind, ref, due_at, created_at) VALUES (?, 'payment_check', ?, ?, ?)", b.workspace_id, b.ref, Date.now(), Date.now());
   }
 }
 
@@ -443,8 +473,18 @@ async function rescheduleLocked(ws: Workspace, b: Booking, newStart: string) {
   const minutes = Math.round(DateTime.fromISO(b.end_at).diff(DateTime.fromISO(b.start_at), "minutes").minutes);
   const f = await cal.isFree(newStart, minutes, b.id);
   if (!f.ok) return { ok: false, message: `${cal.fmt(f.start)} isn't free.${f.result.slots.length ? " Free that day: " + f.result.slots.slice(0, 4).join(", ") : ""}` };
-  if (b.event_id) await cal.updateEvent(b.event_id, { start: f.start, end: f.end });
-  await setBooking(b.id, { start_at: f.start.toISO()!, end_at: f.end.toISO()! });
+  // Claim the new time in the database first (safe across servers), then move the calendar event.
+  const moved = await guardedWrite(ws.id, f.start.toISO()!, f.end.toISO()!, b.id, (q) =>
+    q.run("UPDATE bookings SET start_at=?, end_at=?, updated_at=datetime('now') WHERE id=?", f.start.toISO()!, f.end.toISO()!, b.id));
+  if (!moved) return { ok: false, message: `${cal.fmt(f.start)} was just taken. Pick another time.` };
+  if (b.event_id) {
+    try {
+      await cal.updateEvent(b.event_id, { start: f.start, end: f.end });
+    } catch (e) {
+      await setBooking(b.id, { start_at: b.start_at, end_at: b.end_at });
+      throw e;
+    }
+  }
   await logActivity(ws.id, "reschedule", b.channel, `Moved ${b.ref} to ${cal.fmt(f.start)} · ${b.customer_name}`);
   await notifyOwners(ws, `🔁 ${b.customer_name} moved ${b.ref} (${b.service_name}) to ${cal.fmt(f.start)}.`);
   return { ok: true, message: `Moved to ${cal.fmt(f.start)}. Ref ${b.ref}.${b.customer_email && canInvite(ws) ? " The calendar invite was updated." : ""}` };

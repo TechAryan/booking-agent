@@ -1,11 +1,13 @@
 import express, { Router } from "express";
+import crypto from "node:crypto";
+import { kickDrain, onInbox, saveEvent } from "../inbox.js";
 import { reply, resetConversation } from "../agent.js";
 import { db, logActivity, Workspace } from "../db.js";
 import { env } from "../env.js";
 import { downloadMedia, markRead, sendText } from "../kapso.js";
 import multer from "multer";
 import { MAX_PROOF_BYTES, proofsFor, saveProofImage, submitCustomerProof } from "../proofs.js";
-import { accessProblem, getWorkspaceByPublicId } from "../models.js";
+import { accessProblem, getWorkspaceById, getWorkspaceByPublicId } from "../models.js";
 import { decrypt, hmacHex, rateLimited, safeEqual } from "../security.js";
 import { html, raw } from "../views/html.js";
 import { ICON_LINKS } from "../views/layout.js";
@@ -18,7 +20,12 @@ import { upiUri, verifyCallbackSignature, verifyWebhookSignature } from "../paym
 export const publicRoutes = Router();
 
 async function liveFor(publicId: string, channel: "widget" | "whatsapp") {
-  const ws = await getWorkspaceByPublicId(publicId);
+  return isLive(await getWorkspaceByPublicId(publicId), channel);
+}
+async function liveForId(id: number, channel: "widget" | "whatsapp") {
+  return isLive(await getWorkspaceById(id), channel);
+}
+function isLive(ws: Awaited<ReturnType<typeof getWorkspaceByPublicId>>, channel: "widget" | "whatsapp") {
   if (!ws) return null;
   if (accessProblem(ws.owner)) return null;
   if (channel === "widget" && !(ws.widget_enabled && ws.owner.perm_widget)) return null;
@@ -116,57 +123,68 @@ publicRoutes.get("/w/:id/meta", async (req, res) => {
 
 // ---------- WhatsApp (Kapso webhook) ----------
 
-const queues = new Map<string, Promise<void>>();
-function enqueue(key: string, job: () => Promise<void>) {
-  const next = (queues.get(key) ?? Promise.resolve()).then(job).catch((e) => console.error("WhatsApp job failed:", e));
-  queues.set(key, next);
-  next.finally(() => queues.get(key) === next && queues.delete(key));
-}
-
-async function firstTime(messageId: string): Promise<boolean> {
-  const r = await db.run("INSERT OR IGNORE INTO seen_messages (id, created_at) VALUES (?, ?)", messageId, Date.now());
-  return r.changes === 1;
-}
+// Webhooks are saved first (one raw row), answered 200 at once, then processed from the inbox. The edge worker
+// writes the same raw rows when it is in front of us, so both paths share everything below.
+const sha = (b: Buffer | string) => crypto.createHash("sha256").update(b).digest("hex");
+export const rawEvent = (headers: Record<string, string>, body: string) => JSON.stringify({ headers, body });
 
 publicRoutes.post("/webhooks/kapso/:id", express.raw({ type: "*/*", limit: "2mb" }), async (req, res) => {
-  const ws = await getWorkspaceByPublicId(req.params.id);
+  const ws = await getWorkspaceByPublicId(String(req.params.id));
   if (!ws) return res.sendStatus(404);
   const secret = decrypt(ws.kapso_webhook_secret_enc);
   const sig = String(req.header("X-Webhook-Signature") || "").replace(/^sha256=/, "");
   const raw = req.body as Buffer;
   if (!secret || !sig || !safeEqual(hmacHex(secret, raw), sig)) return res.sendStatus(401);
+  await saveEvent(ws.id, "wh:kapso", sha(raw), "", rawEvent({ event: String(req.header("X-Webhook-Event") || "") }, raw.toString("utf8")));
+  res.sendStatus(200); // within Kapso's 10 s window
+  kickDrain();
+});
 
-  let payload: any;
-  try {
-    payload = JSON.parse(raw.toString("utf8"));
-  } catch {
-    return res.sendStatus(400);
+// Stage 1: split a Kapso delivery into one row per customer message (deduped on the WhatsApp message id).
+onInbox("wh:kapso", async (rows) => {
+  for (const row of rows) {
+    const live = await liveForId(row.workspace_id, "whatsapp");
+    if (!live) continue;
+    const { headers, body } = JSON.parse(row.body);
+    if (headers.event && headers.event !== "whatsapp.message.received") continue;
+    let payload: any;
+    try { payload = JSON.parse(body); } catch { continue; }
+    const items: any[] = payload?.batch && Array.isArray(payload.data) ? payload.data : [payload];
+    for (const item of items) {
+      const msg = item?.message;
+      if (!msg?.id || msg?.kapso?.direction === "outbound") continue;
+      const phone = String(msg.from ?? item?.conversation?.phone_number ?? "").replace(/[^\d]/g, "");
+      if (!phone) continue;
+      await saveEvent(row.workspace_id, "wa:kapso", String(msg.id), `wa:${phone}`, JSON.stringify(item));
+    }
   }
-  res.sendStatus(200); // answer within Kapso's 10s window, then work
+  kickDrain();
+});
 
-  const live = await liveFor(req.params.id, "whatsapp");
+// Stage 2: one customer's waiting messages, answered together (several quick messages = one reply).
+onInbox("wa:kapso", async (rows) => {
+  const live = await liveForId(rows[0]!.workspace_id, "whatsapp");
   if (!live) return;
-  const event = req.header("X-Webhook-Event");
-  if (event && event !== "whatsapp.message.received") return;
-  const items: any[] = payload?.batch && Array.isArray(payload.data) ? payload.data : [payload];
-
-  // With buffering on, several quick messages from one person arrive together: answer them as one.
-  const byPhone = new Map<string, WaGroup>();
-  for (const item of items) {
-    const msg = item?.message;
-    if (!msg?.id || msg?.kapso?.direction === "outbound" || !await firstTime(`${ws.id}:${msg.id}`)) continue;
-    const phone = String(msg.from ?? item?.conversation?.phone_number ?? "").replace(/[^\d]/g, "");
-    if (!phone) continue;
-    const g = byPhone.get(phone) ?? { ids: [], texts: [], images: [], nonText: false };
-    g.ids.push(msg.id);
+  const phone = rows[0]!.group_key.replace(/^wa:/, "");
+  // An owner can switch sides with "/customer …": keep owner and customer messages in separate replies.
+  const isOwner = ownerPhones(live).includes(phone);
+  const groups: WaGroup[] = [];
+  let mode = "";
+  for (const row of rows) {
+    const item = JSON.parse(row.body);
+    const msg = item.message;
     const text = msg.text?.body ?? (msg.type === "text" ? msg.kapso?.content : "") ?? "";
+    const m = isOwner && /^\/customer\b/i.test(text) ? "customer" : "same";
+    if (!groups.length || (m === "customer") !== (mode === "customer")) groups.push({ ids: [], texts: [], images: [], nonText: false });
+    mode = m;
+    const g = groups[groups.length - 1]!;
+    g.ids.push(msg.id);
     if (text) g.texts.push(text);
     else if (msg.type === "image" && msg.image?.id) g.images.push({ id: String(msg.image.id), mime: String(msg.image.mime_type || "image/jpeg"), caption: String(msg.image.caption || "") });
     else g.nonText = true;
     g.name = item?.conversation?.kapso?.contact_name ?? g.name;
-    byPhone.set(phone, g);
   }
-  for (const [phone, g] of byPhone) enqueue(`${ws.id}:${phone}`, () => handleWhatsApp(live, phone, g));
+  for (const g of groups) await handleWhatsApp(live, phone, g);
 });
 
 type WaGroup = { ids: string[]; texts: string[]; images: { id: string; mime: string; caption: string }[]; name?: string; nonText: boolean };
@@ -222,27 +240,31 @@ async function handleWhatsApp(ws: Workspace, phone: string, g: WaGroup) {
 // ---------- Razorpay ----------
 
 publicRoutes.post("/webhooks/razorpay/:id", express.raw({ type: "*/*", limit: "1mb" }), async (req, res) => {
-  const ws = await getWorkspaceByPublicId(req.params.id);
+  const ws = await getWorkspaceByPublicId(String(req.params.id));
   if (!ws) return res.sendStatus(404);
   const secret = decrypt(ws.razorpay_webhook_secret_enc);
   const raw = req.body as Buffer;
   if (!secret || !verifyWebhookSignature(secret, raw, String(req.header("X-Razorpay-Signature") || ""))) return res.sendStatus(401);
-  let ev: any;
-  try { ev = JSON.parse(raw.toString("utf8")); } catch { return res.sendStatus(400); }
-  // Razorpay retries on non-2xx, and may send the same event twice: everything below is idempotent.
-  const eventId = String(req.header("X-Razorpay-Event-Id") || "");
-  if (eventId && !(await firstTime(`rzp:${ws.id}:${eventId}`))) return res.sendStatus(200);
+  // Razorpay retries and may send an event twice: the event id (or the body hash) dedupes it.
+  const eventId = String(req.header("X-Razorpay-Event-Id") || "") || sha(raw);
+  await saveEvent(ws.id, "wh:razorpay", eventId, "", rawEvent({}, raw.toString("utf8")));
   res.sendStatus(200);
-  try {
+  kickDrain();
+});
+
+onInbox("wh:razorpay", async (rows) => {
+  for (const row of rows) {
+    const ws = await getWorkspaceById(row.workspace_id);
+    if (!ws) continue;
+    let ev: any;
+    try { ev = JSON.parse(JSON.parse(row.body).body); } catch { continue; }
     const link = ev?.payload?.payment_link?.entity;
-    if (!link) return;
+    if (!link) continue;
     const b = (await getBooking(ws, link.reference_id)) ?? (await db.get<Booking>("SELECT * FROM bookings WHERE workspace_id=? AND payment_link_id=?", ws.id, link.id));
-    if (!b || b.payment_link_id !== link.id) return;
+    if (!b || b.payment_link_id !== link.id) continue;
+    // markPaid / checkPayment are idempotent, so a retry after a crash is safe.
     if (ev.event === "payment_link.paid") await markPaid(ws, b, ev?.payload?.payment?.entity?.id ?? null, "webhook");
     else if (ev.event === "payment_link.expired" || ev.event === "payment_link.cancelled") await checkPayment(ws, b);
-  } catch (e: any) {
-    console.error(`[razorpay ${ws.public_id}]`, e?.message);
-    await logActivity(ws.id, "error", "payment", `Webhook: ${e?.message}`);
   }
 });
 

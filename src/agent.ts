@@ -1,8 +1,8 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { aiChat, chatWith } from "./ai/registry.js";
+import { DEFAULT_PROVIDER } from "./ai/providers.js";
+import type { Block, Msg, TextBlock, ToolDef, ToolResultBlock } from "./ai/types.js";
 import { DateTime } from "luxon";
 import { db, logActivity, Workspace } from "./db.js";
-import { env } from "./env.js";
-import { claudeCredsFor } from "./models.js";
 import { canInvite, hoursOf, normPhone, WorkspaceCalendar } from "./calendar.js";
 import {
   addHoliday, addOffer, addService, deleteHoliday, deleteOffer, deleteService, findService, inr, knowledgeForPrompt, listHolidays,
@@ -14,44 +14,18 @@ import { razorpayReady, upiReady } from "./payments.js";
 
 export type Channel = "whatsapp" | "widget" | "test";
 
-const clients = new Map<string, Anthropic>();
-export function anthropicFor(apiKey: string): Anthropic {
-  let c = clients.get(apiKey);
-  if (!c) {
-    c = new Anthropic({ apiKey });
-    clients.set(apiKey, c);
-  }
-  return c;
-}
-
-/** Cheap real call to confirm a key works and has credit. */
+/** Checks a Claude key the admin adds as a shared key (Claude only), with a real tiny request. */
 export async function testAnthropicKey(apiKey: string, model: string): Promise<void> {
-  try {
-    await anthropicFor(apiKey).messages.create({ model, max_tokens: 5, messages: [{ role: "user", content: "Say ok" }] });
-  } catch (e: any) {
-    const status = e?.status;
-    if (status === 401) throw new Error("This API key is not valid. Copy it again from the Anthropic Console.");
-    if (status === 400 && /credit|billing/i.test(e?.message)) throw new Error("The key works, but the account has no credit. Add credit under Billing in the Anthropic Console.");
-    if (status === 404) throw new Error(`The model "${model}" is not available for this key. Pick another model.`);
-    if (status === 429) throw new Error("Rate limited by Anthropic. Wait a minute and try again.");
-    throw new Error(e?.message || "Could not reach Anthropic.");
-  }
+  await chatWith(DEFAULT_PROVIDER, apiKey, { model, system: { stable: "Reply with ok." }, messages: [{ role: "user", content: "Say ok" }], maxTokens: 5 });
 }
 
-/** The Claude client + model for a workspace (theirs, or the one we provide). */
-export async function claudeFor(ws: Workspace) {
-  const creds = await claudeCredsFor(ws);
-  if (!creds.apiKey) throw new Error("Connect Claude first.");
-  return { client: anthropicFor(creds.apiKey), model: creds.model || env.defaultModel };
-}
-
-const obj = (properties: Record<string, any>, required: string[] = []): Anthropic.Tool["input_schema"] => ({ type: "object", properties, required });
+const obj = (properties: Record<string, any>, required: string[] = []): ToolDef["input_schema"] => ({ type: "object", properties, required });
 const str = (description: string) => ({ type: "string", description });
 const num = (description: string) => ({ type: "number", description });
 
 // ============================================================ Customer side
 
-function customerTools(ws: Workspace, channel: Channel, services: Service[]): Anthropic.Tool[] {
+function customerTools(ws: Workspace, channel: Channel, services: Service[]): ToolDef[] {
   const needsPhone = channel !== "whatsapp";
   const names = services.map((s) => s.name);
   const anyPaid = services.some((s) => s.price > 0);
@@ -241,7 +215,7 @@ async function runCustomerTool(ws: Workspace, channel: Channel, owner: string, p
 
 // ============================================================ Owner side (their own number on WhatsApp, or "chat as owner" in the test page)
 
-function ownerTools(): Anthropic.Tool[] {
+function ownerTools(): ToolDef[] {
   const svcFields = {
     name: str("Service name"), price: num("Price in rupees; 0 = free"), details: str("Short description (optional)"),
     mode: { type: "string", enum: ["online", "offline", "both"] }, duration_minutes: num("Length in minutes (optional)"),
@@ -319,7 +293,7 @@ Rules:
   · "paid": already paid; ask cash or UPI, and say they can send a screenshot here as proof (optional).
   Read it back in one line and get a yes, then call book_for_customer.
 - After book_for_customer: if whatsapp_sent is false, give the owner the forward_link and say: "Tap this to send the booking details (and payment link, if any) to the customer from your WhatsApp" (WhatsApp lets us message a customer only within 24 hours of their last message to us). If it was sent, say so.
-- When the owner sends a photo ("[Sent a photo]"), it's usually a payment proof: use the booking you just made, or ask which booking it's for, then call attach_payment_proof.
+- When the owner sends a photo ("[Sent a photo]"), it's usually a payment proof. If they name a booking ref (now or in the next message), use exactly that ref. Only if they don't, ask which booking it's for (suggest the one you just made). Then call attach_payment_proof.
 - If the owner pastes a bank/UPI credit message or says they received money, find the matching booking waiting for payment (list_bookings with filter pending, match amount/name) and confirm it with confirm_payment. If several could match, ask.
 - If they want to try the customer experience here, tell them to start the message with /customer .`;
 }
@@ -459,23 +433,23 @@ async function runOwnerTool(ws: Workspace, name: string, input: any, services: S
 
 const MAX_MESSAGES = 30;
 
-async function loadHistory(wsId: number, channel: Channel, ext: string): Promise<Anthropic.MessageParam[]> {
+async function loadHistory(wsId: number, channel: Channel, ext: string): Promise<Msg[]> {
   const row = (await db.get("SELECT history FROM conversations WHERE workspace_id=? AND channel=? AND external_id=?", wsId, channel, ext)) as any;
   return row ? stripThinking(JSON.parse(row.history)) : [];
 }
 
-// Thinking blocks are signed against the exact system prompt they were made with. Keep them only inside the turn that made them.
-export function stripThinking(history: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+// Thinking / reasoning blocks are tied to the exact prompt and AI that made them. Keep them only inside their own turn.
+export function stripThinking(history: Msg[]): Msg[] {
   return history
     .map((m) => {
       if (m.role !== "assistant" || typeof m.content === "string") return m;
-      const content = m.content.filter((b: any) => b.type !== "thinking" && b.type !== "redacted_thinking");
+      const content = m.content.filter((b: any) => b.type !== "thinking" && b.type !== "redacted_thinking" && b.type !== "provider_state");
       return { ...m, content };
     })
     .filter((m) => typeof m.content === "string" || m.content.length > 0);
 }
 
-async function saveHistory(wsId: number, channel: Channel, ext: string, history: Anthropic.MessageParam[]) {
+async function saveHistory(wsId: number, channel: Channel, ext: string, history: Msg[]) {
   let h = stripThinking(history).slice(-MAX_MESSAGES);
   while (h.length && !(h[0]!.role === "user" && typeof h[0]!.content === "string")) h = h.slice(1);
   await db.run(
@@ -498,7 +472,6 @@ export async function reply(
   text: string,
   opts: { trustedPhone?: string; contactName?: string; asOwner?: boolean } = {}
 ): Promise<string> {
-  const { client, model } = await claudeFor(ws);
   const tz = ws.timezone || "Asia/Kolkata";
   const services = await listServices(ws);
   const asOwner = !!opts.asOwner;
@@ -512,24 +485,21 @@ export async function reply(
   const stable = asOwner ? await ownerPrompt(ws, services) : await customerPrompt(ws, channel, services);
   const now = DateTime.now().setZone(tz);
   const dynamic = `Now: ${now.toFormat("cccc, d LLLL yyyy, HH:mm")} (${tz}). Resolve "today", "tomorrow", "Friday" etc. against this.${opts.contactName && !asOwner ? `\nTheir WhatsApp name is "${opts.contactName}" (confirm before using it).` : ""}`;
-  const system: Anthropic.TextBlockParam[] = [
-    { type: "text", text: stable, cache_control: { type: "ephemeral" } },
-    { type: "text", text: dynamic },
-  ];
+  const system = { stable, dynamic };
   const tools = asOwner ? ownerTools() : customerTools(ws, channel, services);
   history.push({ role: "user", content: text.slice(0, 4000) });
 
   for (let step = 0; step < 10; step++) {
-    const res = await client.messages.create({ model, max_tokens: 1200, system, tools, messages: history });
+    const res = await aiChat(ws, { maxTokens: 1200, system, tools, messages: history, cacheKey: `ws${ws.id}:${asOwner ? "owner" : channel}` });
     history.push({ role: "assistant", content: res.content });
 
-    if (res.stop_reason !== "tool_use") {
-      const out = res.content.filter((b): b is Anthropic.TextBlock => b.type === "text").map((b) => b.text).join("\n").trim();
+    if (!res.toolCalls) {
+      const out = res.content.filter((b): b is TextBlock => b.type === "text").map((b) => b.text).join("\n").trim();
       await saveHistory(ws.id, channel, convId, history);
       return out || "Sorry, could you say that again?";
     }
 
-    const results: Anthropic.ToolResultBlockParam[] = [];
+    const results: ToolResultBlock[] = [];
     // Tools can change services (owner mode); reload them for the next round.
     let list = await listServices(ws);
     for (const block of res.content) {

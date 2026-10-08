@@ -2,7 +2,9 @@ import { Router, Request, Response, NextFunction } from "express";
 import multer from "multer";
 import { DateTime } from "luxon";
 import { checkCsrf, requireLogin } from "../auth.js";
-import { reply, resetConversation, testAnthropicKey } from "../agent.js";
+import { reply, resetConversation } from "../agent.js";
+import { aiConnection, listModels, saveAIConnection, savedKeyFor, testAI, usageThisMonth } from "../ai/registry.js";
+import { DEFAULT_PROVIDER, PROVIDERS, providerById, versionLabel } from "../ai/providers.js";
 import { missingGoogleScopes, googleAuthUrl, googleExchange, googleRevoke, googleSignInEnabled, listWritableCalendars, parseServiceAccount, testCalendarFor } from "../calendar.js";
 import { db, logActivity, Workspace } from "../db.js";
 import { env } from "../env.js";
@@ -10,7 +12,7 @@ import { createWebhook, deleteWebhook, listOurWebhooks, verifyKapso } from "../k
 import { countPending } from "../bookings.js";
 import { getWorkspaceForUser, recentActivity, updateWorkspace } from "../models.js";
 import { decrypt, encrypt, mask, randomToken, rateLimited } from "../security.js";
-import { html, raw, Safe } from "../views/html.js";
+import { esc, html, raw, Safe } from "../views/html.js";
 import { icon, tile } from "../views/icons.js";
 import { csrfField, page, withMsg } from "../views/layout.js";
 import { stepNav } from "../views/stepper.js";
@@ -20,11 +22,8 @@ import { inr, listServices, normIndian, ownerPhones, saveServices, Service } fro
 export const setupRoutes = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 64 * 1024, files: 1 } });
 
-export const MODELS = [
-  { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (recommended: fast and smart)" },
-  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5 (cheapest)" },
-  { id: "claude-opus-5-5", label: "Claude Opus 5.5 (most capable, costs more)" },
-];
+/** Claude versions for the admin's shared keys. */
+export const MODELS = DEFAULT_PROVIDER.versions.map((v) => ({ id: v.id, label: `Claude ${v.label}${v.tag ? ` (${v.tag.toLowerCase()})` : ""}` }));
 
 const TIMEZONES = ["Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Europe/London", "America/New_York", "America/Los_Angeles", "Australia/Sydney"];
 
@@ -72,7 +71,7 @@ setupRoutes.get("/", requireLogin, async (req, res) => {
   }
   const steps: { key: string; title: string; desc: string; done: boolean; show: boolean; optional?: boolean; extra?: boolean; href?: string }[] = [
     { key: "business", title: "Business details", desc: "Name, services, working hours", done: !!w.business_done, show: true },
-    { key: "claude", title: "Connect Claude", desc: w.shared_key_id ? "Included in your plan, nothing to do" : "The AI that talks to your customers", done: !!w.claude_ok, show: true },
+    { key: "claude", title: "Connect your AI", desc: w.shared_key_id ? "Included in your plan, nothing to do" : "Claude recommended; other AIs available", done: !!w.claude_ok, show: true },
     { key: "google", title: "Connect Google Calendar", desc: "Where bookings are saved", done: !!w.google_ok, show: true },
     { key: "test", title: "Test your assistant", desc: "Chat with it and make a test booking", done: !!w.tested, show: true },
     { key: "profile", title: "Profile & knowledge", desc: knowledgeN || w.address ? `${w.address ? "Address added" : "No address yet"} · ${knowledgeN} file${knowledgeN === 1 ? "" : "s"} or notes` : "Address, map, contact, website, files so it knows your business", done: !!(w.address || w.contact_phone || knowledgeN), show: true, optional: true, extra: true },
@@ -297,14 +296,28 @@ function servicesEditor(list: Service[]) {
   </div>`;
 }
 
-// ---------- Step 2: Claude ----------
+// ---------- Step 2: AI (Claude recommended; other AIs under "Other AI options") ----------
+
+/** Guide text: escapes everything, then allows **bold**, `code` and [links](https://…). */
+function md(s: string): Safe {
+  return raw(
+    esc(s)
+      .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+      .replace(/`(.+?)`/g, "<code>$1</code>")
+      .replace(/\[(.+?)\]\((https:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+  );
+}
+
+const TAG_CLASS: Record<string, string> = { Recommended: "rec", Cheaper: "cheap", Smartest: "smart" };
+
+setupRoutes.get("/setup/ai", requireLogin, (req, res) => res.redirect(`/setup/claude${req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : ""}`));
 
 setupRoutes.get("/setup/claude", requireLogin, async (req, res) => {
   const w = await ws(req);
   if (w.shared_key_id) {
     return res.send(
       page(req, {
-        title: "Claude",
+        title: "AI",
         body: html`${stepNav(req, "claude", w)}
           <div class="page-head">${tile("claude", "lg")}<div><p class="eyebrow">Required</p><h1>Claude is included</h1></div></div>
           <div class="card provided">
@@ -314,31 +327,74 @@ setupRoutes.get("/setup/claude", requireLogin, async (req, res) => {
       })
     );
   }
-  const current = decrypt(w.anthropic_key_enc);
+  const conn = await aiConnection(w);
+  const p = providerById(String(req.query.p || "")) ?? conn?.provider ?? DEFAULT_PROVIDER;
+  const saved = await savedKeyFor(w, p.id);
+  const isCurrent = conn?.provider.id === p.id;
+  const curModel = isCurrent ? conn!.model : p.versions[0]!.id;
+  const custom = !p.versions.some((v) => v.id === curModel);
+  const usage = conn ? await usageThisMonth(w.id) : null;
+  const others = PROVIDERS.filter((x) => x.id !== DEFAULT_PROVIDER.id);
+  const name = p.id === "anthropic" ? "Claude" : p.name;
   res.send(
     page(req, {
-      title: "Connect Claude",
+      title: "Connect your AI",
       body: html`${stepNav(req, "claude", w)}
-        <div class="page-head">${tile("claude", "lg")}<div><p class="eyebrow">Required</p><h1>Connect Claude</h1></div></div>
-        <p class="sub">Claude is the AI that chats with your customers. You pay Anthropic directly for what it uses, usually a few rupees per conversation.</p>
-        <div class="card">
-          <h2>Get your API key (5 minutes)</h2>
-          <ol class="guide">
-            <li>Open <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a> and sign up or log in.</li>
-            <li>Go to <b>Settings → Billing</b> and add credit. $10 is plenty to start.</li>
-            <li>Go to <b>Settings → API Keys</b> and click <b>Create Key</b>. Name it <code>booking-assistant</code>.</li>
-            <li>Copy the key. It starts with <code>sk-ant-</code> and is shown only once.</li>
-            <li>Paste it below and click <b>Test and save</b>.</li>
-          </ol>
+        <div class="page-head">${tile("claude", "lg")}<div><p class="eyebrow">Required</p><h1>Connect your AI</h1></div></div>
+        <p class="sub">The AI chats with your customers and books for them. You pay the AI company directly for what it uses, usually a few rupees per conversation.</p>
+        ${conn
+          ? html`<div class="ai-current">
+              <div class="done-line">${tile("check")}<span><b>${conn.provider.id === "anthropic" ? "Claude" : conn.provider.name} · ${versionLabel(conn.provider, conn.model)}</b>
+              <small>Key <span class="mono">${mask(conn.key)}</span>${w.claude_ok ? html` · <span class="pill ok">Working</span>` : ""}${usage && usage.requests ? html` · ${usage.requests} AI replies this month` : ""}</small></span></div>
+            </div>`
+          : ""}
+        <div class="ai-pick">
+          <a class="ai-rec ${p.id === "anthropic" ? "on" : ""}" href="/setup/claude?p=anthropic#connect">
+            ${tile("claude", "lg")}
+            <span class="grow"><b>Claude <span class="tag rec">Recommended</span></b>
+            <small>Claude is our recommended AI. We test every option below before offering it.</small></span>
+            ${p.id === "anthropic" ? html`<span class="sn-tick">${icon("check", 13)}</span>` : icon("chevron", 14)}
+          </a>
+          <details class="ai-others" ${p.id !== "anthropic" ? "open" : ""}>
+            <summary>Other AI options ${icon("chevron", 13)}</summary>
+            <div class="chips ai-chips">
+              ${others.map((x) => html`<a class="chip ${x.id === p.id ? "on" : ""}" href="/setup/claude?p=${x.id}#connect">${x.name}${conn?.provider.id === x.id ? html` <i>connected</i>` : ""}</a>`)}
+            </div>
+          </details>
+        </div>
+
+        <div class="card" id="connect">
+          <h2>Connect ${name}</h2>
+          ${p.note ? html`<p class="ai-note">${p.note}</p>` : ""}
+          <ol class="guide">${p.steps.map((s) => html`<li>${md(s)}</li>`)}</ol>
+          <p class="muted small">Prices change; check <a href="${p.pricingUrl}" target="_blank" rel="noopener">${name}'s pricing page</a>.</p>
         </div>
         <div class="card">
-          ${current ? html`<p>Connected key: <span class="mono">${mask(current)}</span> ${w.claude_ok ? html`<span class="pill ok">Working</span>` : ""}</p>` : ""}
-          <form method="post" action="/setup/claude" data-busy="Testing your key…">
+          <form method="post" action="/setup/claude" data-busy="Running a practice booking…">
             ${csrfField(req)}
-            <label>API key ${current ? html`<span class="hint">leave empty to keep the current key</span>` : ""}</label>
-            <input type="password" name="api_key" placeholder="sk-ant-…" autocomplete="off" ${current ? "" : "required"}>
-            <label>Model</label>
-            <select name="model">${MODELS.map((m) => html`<option value="${m.id}" ${m.id === (w.claude_model || env.defaultModel) ? "selected" : ""}>${m.label}</option>`)}</select>
+            <input type="hidden" name="provider" value="${p.id}">
+            <label>${name} API key ${saved ? html`<span class="hint">saved: <span class="mono">${mask(saved)}</span> · leave empty to keep it</span>` : ""}</label>
+            <input type="password" name="api_key" placeholder="${p.keyPlaceholder}" autocomplete="off" ${saved ? "" : "required"}
+              data-prefix="${p.keyPrefix ?? ""}" data-who="${name}">
+            <label>Version</label>
+            <div class="ver-list" role="radiogroup">
+              ${p.versions.map((v) => html`<label class="ver ${v.id === curModel ? "on" : ""}">
+                <input type="radio" name="model" value="${v.id}" ${v.id === curModel ? "checked" : ""}>
+                <span class="grow">${v.label}<small class="vid">${v.id}</small></span>
+                ${v.tag ? html`<span class="tag ${TAG_CLASS[v.tag] ?? ""}">${v.tag}</span>` : ""}
+              </label>`)}
+              <label class="ver ${custom ? "on" : ""}">
+                <input type="radio" name="model" value="other" ${custom ? "checked" : ""}>
+                <span class="grow">More versions<small>Any other version your key can use</small></span>
+              </label>
+            </div>
+            <div class="more-ver" ${custom ? "" : "hidden"}>
+              <input name="model_other" list="ai-models" placeholder="Type or pick a version name" value="${custom ? curModel : ""}" autocomplete="off" spellcheck="false">
+              <datalist id="ai-models"></datalist>
+              <button type="button" class="secondary small" data-load-models="${p.id}">Show the versions my key can use</button>
+              <p class="muted small" data-models-msg>We only list versions we can check. Others may not handle bookings well; the test below tells you.</p>
+            </div>
+            <p class="muted small">Test and save checks the key, then runs a practice booking (check a time → book it → reply) with pretend tools. Your calendar isn't touched.</p>
             <div class="row"><button>Test and save</button></div>
           </form>
         </div>`,
@@ -348,20 +404,44 @@ setupRoutes.get("/setup/claude", requireLogin, async (req, res) => {
 
 setupRoutes.post("/setup/claude", requireLogin, checkCsrf, async (req, res) => {
   const w = await ws(req);
-  const back = "/setup/claude";
   if (w.shared_key_id) return res.redirect(withMsg("/setup/google", "msg", "Claude is already included in your plan."));
-  if (rateLimited(`claude-test:${w.id}`, 10, 10 * 60_000)) return res.redirect(withMsg(back, "err", "Too many tries. Wait a few minutes."));
-  const key = String(req.body.api_key || "").trim() || decrypt(w.anthropic_key_enc) || "";
-  const model = MODELS.some((m) => m.id === req.body.model) ? req.body.model : env.defaultModel;
+  const p = providerById(String(req.body.provider || "anthropic"));
+  if (!p) return res.redirect(withMsg("/setup/claude", "err", "Pick an AI."));
+  const back = `/setup/claude?p=${p.id}`;
+  const name = p.id === "anthropic" ? "Claude" : p.name;
+  if (rateLimited(`claude-test:${w.id}`, Number(process.env.AI_TEST_LIMIT || 10), 10 * 60_000)) return res.redirect(withMsg(back, "err", "Too many tries. Wait a few minutes."));
+  const key = String(req.body.api_key || "").trim() || (await savedKeyFor(w, p.id)) || "";
+  const picked = String(req.body.model || "");
+  const model = picked === "other" ? String(req.body.model_other || "").trim() : p.versions.some((v) => v.id === picked) ? picked : p.versions[0]!.id;
   if (!key) return res.redirect(withMsg(back, "err", "Paste your API key."));
-  if (!key.startsWith("sk-ant-")) return res.redirect(withMsg(back, "err", "That doesn't look like an Anthropic key. It should start with sk-ant-"));
+  if (/\s/.test(key) || key.length < 10 || (p.id === "anthropic" && !key.startsWith("sk-ant-")))
+    return res.redirect(withMsg(back, "err", p.id === "anthropic" ? "That doesn't look like a Claude key. It should start with sk-ant-" : `That doesn't look like a ${name} API key. Copy it again.`));
+  if (!/^[\w.:\/@-]{2,120}$/.test(model)) return res.redirect(withMsg(back, "err", "Pick a version, or type a version name exactly as the provider shows it."));
+  let note: string | null = null;
   try {
-    await testAnthropicKey(key, model);
+    note = (await testAI(p, key, model)).note;
   } catch (e: any) {
-    return res.redirect(withMsg(back, "err", e.message));
+    return res.redirect(withMsg(back, "err", e?.message || `Couldn't reach ${name}.`));
   }
-  await updateWorkspace(w.id, { anthropic_key_enc: encrypt(key), claude_model: model, claude_ok: 1 });
-  res.redirect(withMsg(w.google_ok ? "/" : "/setup/google", "ok", "Claude is connected and working."));
+  await saveAIConnection(w, p.id, key, model);
+  await logActivity(w.id, "setup", "", `AI connected: ${name} · ${versionLabel(p, model)}`);
+  res.redirect(withMsg(w.google_ok ? "/" : "/setup/google", "ok", `${name} is connected and working. The practice booking went through.${note ? ` ${note}.` : ""}`));
+});
+
+/** Live version list for the "More versions" picker (uses the pasted key, or the saved one). */
+setupRoutes.post("/setup/ai/models", requireLogin, checkCsrf, async (req, res) => {
+  const w = await ws(req);
+  const p = providerById(String(req.body.provider || ""));
+  if (!p || w.shared_key_id) return res.status(400).json({ error: "Pick an AI first." });
+  if (rateLimited(`ai-models:${w.id}`, 20, 10 * 60_000)) return res.status(429).json({ error: "Too many tries. Wait a few minutes." });
+  const key = String(req.body.api_key || "").trim() || (await savedKeyFor(w, p.id)) || "";
+  if (!key) return res.status(400).json({ error: "Paste your API key first, then press this again." });
+  try {
+    const models = (await listModels(p, key)).slice(0, 300);
+    res.json({ models });
+  } catch (e: any) {
+    res.status(400).json({ error: e?.message || "Couldn't load the list." });
+  }
 });
 
 // ---------- Step 3: Google Calendar ----------
@@ -551,7 +631,7 @@ const GOOGLE_G = '<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="t
 
 function notReady(w: Workspace): Safe | null {
   if (isReady(w)) return null;
-  const missing = [!w.business_done && "business details", !w.claude_ok && "Claude", !w.google_ok && "Google Calendar"].filter(Boolean).join(", ");
+  const missing = [!w.business_done && "business details", !w.claude_ok && "the AI", !w.google_ok && "Google Calendar"].filter(Boolean).join(", ");
   return html`<div class="flash info">Finish ${missing} first.</div>`;
 }
 
@@ -794,7 +874,7 @@ setupRoutes.post("/setup/whatsapp", requireLogin, checkCsrf, async (req, res) =>
   try {
     const { display } = await verifyKapso(key, phoneId);
     const secret = randomToken(24);
-    const url = `${env.publicUrl}/webhooks/kapso/${w.public_id}`;
+    const url = `${env.webhookBase || env.publicUrl}/webhooks/kapso/${w.public_id}`;
     if (!/^https:\/\//.test(url) && env.isProd) throw new Error("PUBLIC_URL must be https for WhatsApp.");
     const hook = await createWebhook(key, phoneId, url, secret, w.kapso_phone_number_id === phoneId ? w.kapso_webhook_id : null);
     if (w.kapso_webhook_id && w.kapso_phone_number_id && w.kapso_phone_number_id !== phoneId) {
@@ -810,8 +890,10 @@ setupRoutes.post("/setup/whatsapp", requireLogin, checkCsrf, async (req, res) =>
       await updateWorkspace(o.id, { whatsapp_enabled: 0, kapso_webhook_id: null, kapso_webhook_secret_enc: null });
       await logActivity(o.id, "setup", "whatsapp", "WhatsApp switched off: this number was connected to another account");
     }
-    const stale = await listOurWebhooks(key, phoneId, `${env.publicUrl}/webhooks/kapso/`).catch(() => []);
-    for (const h of stale) if (h.id !== hook.id) await deleteWebhook(key, phoneId, h.id).catch(() => undefined);
+    for (const base of new Set([env.publicUrl, env.webhookBase].filter(Boolean))) {
+      const stale = await listOurWebhooks(key, phoneId, `${base}/webhooks/kapso/`).catch(() => []);
+      for (const h of stale) if (h.id !== hook.id) await deleteWebhook(key, phoneId, h.id).catch(() => undefined);
+    }
     await updateWorkspace(w.id, {
       kapso_key_enc: encrypt(key),
       kapso_phone_number_id: phoneId,

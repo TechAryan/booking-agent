@@ -4,7 +4,20 @@
 import http from "node:http";
 import { DatabaseSync } from "node:sqlite";
 
-const db = new DatabaseSync(process.env.FAKE_TURSO_DB || ":memory:");
+// Like real Turso, each stream (baton) gets its own connection, so interactive transactions work.
+const FILE = process.env.FAKE_TURSO_DB || ":memory:";
+const open = () => { const c = new DatabaseSync(FILE); c.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=0;"); return c; };
+const shared = open();
+const streams = new Map();
+let batonSeq = 1;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Another stream holds the write lock: wait without blocking the event loop (its COMMIT arrives as another request). */
+async function retryBusy(fn) {
+  for (let i = 0; ; i++) {
+    try { return fn(); }
+    catch (e) { if (!/locked|busy/i.test(e.message) || i > 1000) throw e; await sleep(5); }
+  }
+}
 const PORT = Number(process.env.FAKE_TURSO_PORT || 4200);
 
 const toSql = (v) => {
@@ -24,8 +37,9 @@ const toHrana = (v) => {
   return { type: "text", value: String(v) };
 };
 
-function execute(stmt) {
-  const st = db.prepare(stmt.sql);
+const storedSql = new Map(); // sql_id → text ("store_sql" requests, used by interactive transactions)
+function execute(db, stmt) {
+  const st = db.prepare(stmt.sql ?? storedSql.get(stmt.sql_id));
   st.setReadBigInts?.(true);
   const pos = (stmt.args || []).map(toSql);
   const named = Object.fromEntries((stmt.named_args || []).map((a) => [a.name.replace(/^[:@$]/, ""), toSql(a.value)]));
@@ -40,23 +54,29 @@ function execute(stmt) {
   return { cols: [], rows: [], affected_row_count: Number(r.changes), last_insert_rowid: String(r.lastInsertRowid) };
 }
 
-function handle(req) {
+async function handle(db, req) {
   switch (req.type) {
     case "execute":
-      return { type: "execute", result: execute(req.stmt) };
+      return { type: "execute", result: await retryBusy(() => execute(db, req.stmt)) };
     case "sequence":
-      db.exec(req.sql);
+      await retryBusy(() => db.exec(req.sql));
       return { type: "sequence" };
     case "batch": {
       const step_results = [], step_errors = [];
       for (const step of req.batch.steps) {
-        try { step_results.push(execute(step.stmt)); step_errors.push(null); }
+        try { step_results.push(await retryBusy(() => execute(db, step.stmt))); step_errors.push(null); }
         catch (e) { step_results.push(null); step_errors.push({ message: e.message }); }
       }
       return { type: "batch", result: { step_results, step_errors } };
     }
+    case "store_sql":
+      storedSql.set(req.sql_id, req.sql);
+      return { type: "store_sql" };
+    case "close_sql":
+      storedSql.delete(req.sql_id);
+      return { type: "close_sql" };
     case "get_autocommit":
-      return { type: "get_autocommit", is_autocommit: true };
+      return { type: "get_autocommit", is_autocommit: !db.isTransaction };
     case "close":
       return { type: "close" };
     default:
@@ -67,18 +87,29 @@ function handle(req) {
 http.createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
-  req.on("end", () => {
+  req.on("end", async () => {
     res.setHeader("Content-Type", "application/json");
     if (req.headers.authorization !== "Bearer test-token") { res.statusCode = 401; return res.end('{"error":"Unauthorized"}'); }
     if (req.method === "GET" && req.url === "/v2") { res.statusCode = 200; return res.end("{}"); }
     if (req.method === "GET") { res.statusCode = 404; return res.end("{}"); }
     if (req.method === "POST" && req.url === "/v2/pipeline") {
       const j = JSON.parse(body);
-      const results = j.requests.map((r) => {
-        try { return { type: "ok", response: handle(r) }; }
-        catch (e) { return { type: "error", error: { message: e.message } }; }
-      });
-      return res.end(JSON.stringify({ baton: "stateless", base_url: null, results }));
+      let baton = j.baton && streams.has(j.baton) ? j.baton : null;
+      let db = baton ? streams.get(baton) : FILE === ":memory:" ? shared : open();
+      const results = [];
+      let closed = false;
+      for (const r of j.requests) {
+        if (r.type === "close") { closed = true; results.push({ type: "ok", response: { type: "close" } }); continue; }
+        try { results.push({ type: "ok", response: await handle(db, r) }); }
+        catch (e) { results.push({ type: "error", error: { message: e.message } }); }
+      }
+      if (closed) {
+        if (baton) streams.delete(baton);
+        if (db !== shared) { try { if (db.isTransaction) db.exec("ROLLBACK"); } catch {} db.close(); }
+        return res.end(JSON.stringify({ baton: null, base_url: null, results }));
+      }
+      if (!baton) { baton = `b${batonSeq++}`; streams.set(baton, db); }
+      return res.end(JSON.stringify({ baton, base_url: null, results }));
     }
     res.statusCode = 404; res.end("{}");
   });

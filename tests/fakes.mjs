@@ -91,13 +91,116 @@ function razorpay(req, j, send) {
   return send(404, { error: { description: "no route" } });
 }
 
+
+// ---- Fake AI providers (OpenAI-style). Requests are translated to the Claude fake's shape so the same
+// scripted behaviour ("!tool …", booking flow, screenshot reading) works for every provider.
+const AI_MODELS = {
+  openai: ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-mini", "text-embedding-4", "gpt-realtime-2"],
+  gemini: ["models/gemini-3.8-flash", "models/gemini-3.5-flash-lite", "models/gemini-3.1-pro-preview", "models/gemini-embedding-002"],
+  deepseek: ["deepseek-flash", "deepseek-v4-pro"],
+  sarvam: ["sarvam-105b", "sarvam-105b-conversations"],
+  openrouter: ["anthropic/claude-sonnet-5.5", "anthropic/claude-haiku-5.5", "google/gemini-3.8-flash", "meta/llama-9"],
+};
+const aiKeyOk = (p, k) => k && !/bad/.test(k) && !(p === "deepseek" && /broke/.test(k));
+function chatToClaude(j) {
+  const out = { system: "", messages: [], tools: j.tools?.map((t) => ({ name: t.function.name, description: t.function.description, input_schema: t.function.parameters })) };
+  if (j.tool_choice === "required" && out.tools?.length === 1) out.tool_choice = { type: "tool", name: out.tools[0].name };
+  const push = (role, blocks) => { const last = out.messages.at(-1); if (last && last.role === role && Array.isArray(last.content)) last.content.push(...blocks); else out.messages.push({ role, content: blocks }); };
+  for (const m of j.messages) {
+    if (m.role === "system") { out.system += m.content; continue; }
+    if (m.role === "tool") { push("user", [{ type: "tool_result", tool_use_id: m.tool_call_id, content: m.content }]); continue; }
+    if (m.role === "assistant") {
+      const b = [];
+      if (m.content) b.push({ type: "text", text: m.content });
+      for (const tc of m.tool_calls ?? []) b.push({ type: "tool_use", id: tc.id, name: tc.function.name, input: JSON.parse(tc.function.arguments) });
+      push("assistant", b); continue;
+    }
+    if (typeof m.content === "string") out.messages.push({ role: "user", content: m.content });
+    else push("user", m.content.map((c) => c.type === "text" ? { type: "text", text: c.text } : { type: "image", source: { type: "base64", data: c.image_url.url.split(",")[1] } }));
+  }
+  return out;
+}
+function respToClaude(j) {
+  const out = { system: j.instructions, messages: [], tools: j.tools?.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })) };
+  if (j.tool_choice?.name) out.tool_choice = { type: "tool", name: j.tool_choice.name };
+  const push = (role, blocks) => { const last = out.messages.at(-1); if (last && last.role === role && Array.isArray(last.content)) last.content.push(...blocks); else out.messages.push({ role, content: blocks }); };
+  for (const it of j.input) {
+    if (it.type === "reasoning") continue;
+    if (it.type === "function_call") { push("assistant", [{ type: "tool_use", id: it.call_id, name: it.name, input: JSON.parse(it.arguments) }]); continue; }
+    if (it.type === "function_call_output") { push("user", [{ type: "tool_result", tool_use_id: it.call_id, content: it.output }]); continue; }
+    if (it.type === "message" && it.role === "assistant") { push("assistant", it.content.map((c) => ({ type: "text", text: c.text }))); continue; }
+    if (typeof it.content === "string") { if (it.role === "assistant") push("assistant", [{ type: "text", text: it.content }]); else out.messages.push({ role: "user", content: it.content }); continue; }
+    push(it.role, it.content.map((c) => c.type === "input_text" ? { type: "text", text: c.text } : { type: "image", source: { type: "base64", data: c.image_url.split(",")[1] } }));
+  }
+  return out;
+}
+let fcSeq = 0;
+function fakeAI(p, rest, req, j, send) {
+  const key = (req.headers.authorization || "").replace(/^Bearer /, "");
+  if (req.method === "GET" && rest === "/models") {
+    if (!aiKeyOk(p, key)) return send(401, { error: { message: "Incorrect API key provided" } });
+    return send(200, { object: "list", data: AI_MODELS[p].map((id) => ({ id, ...(p === "openrouter" ? { name: id.split("/")[1] } : {}) })) });
+  }
+  if (p === "deepseek" && rest === "/user/balance") return send(200, { is_available: !/broke/.test(key), balance_infos: [{ currency: "USD", total_balance: /broke/.test(key) ? "0.00" : "4.20" }] });
+  if (p === "openrouter" && rest === "/key") return send(200, { data: { label: "test", limit_remaining: 9.5, usage: 0.5 } });
+  if (!aiKeyOk(p, key)) return send(p === "gemini" ? 400 : 401, { error: { message: p === "gemini" ? "API key not valid. Please pass a valid API key." : "Incorrect API key provided" } });
+  if (!AI_MODELS[p].some((m) => m.replace(/^models\//, "") === j.model)) return send(404, { error: { message: `The model ${j.model} does not exist` } });
+  if (rest === "/responses") {
+    const reasoningBack = j.input.some((i) => i.type === "reasoning");
+    log({ ai: p, model: j.model, key, store: j.store, reasoning: j.reasoning, reasoningBack, cacheKey: j.prompt_cache_key });
+    const [c, o] = claude(respToClaude(j), "x");
+    if (c !== 200) return send(c, o);
+    const output = [{ type: "reasoning", id: `rs_${++fcSeq}`, summary: [], encrypted_content: "enc-" + fcSeq }];
+    for (const b of o.content) {
+      if (b.type === "text") output.push({ type: "message", id: `msg_${++fcSeq}`, role: "assistant", status: "completed", content: [{ type: "output_text", text: b.text }] });
+      if (b.type === "tool_use") output.push({ type: "function_call", id: `fc_${++fcSeq}`, call_id: b.id, name: b.name, arguments: JSON.stringify(b.input) });
+    }
+    return send(200, { id: "resp", object: "response", output, usage: { input_tokens: 10, output_tokens: 5, input_tokens_details: { cached_tokens: 2 } } });
+  }
+  if (rest === "/chat/completions") {
+    // Gemini 3 rejects a function call in history that lost its thought signature.
+    if (p === "gemini") for (const m of j.messages) if (m.tool_calls?.length && !m.tool_calls[0].extra_content?.google?.thought_signature) return send(400, { error: { message: "Function call is missing a thought_signature" } });
+    if (p === "gemini" && JSON.stringify(j.tools ?? []).includes('"type":["')) return send(400, { error: { message: "Invalid JSON payload: type list" } });
+    const sigs = j.messages.flatMap((m) => (m.tool_calls ?? []).map((t) => t.extra_content?.google?.thought_signature)).filter(Boolean);
+    log({ ai: p, model: j.model, key, thinking: j.thinking, reasoning_effort: j.reasoning_effort, hasReasoningEffort: "reasoning_effort" in j, toolChoice: j.tool_choice, sigs, image: JSON.stringify(j.messages).includes("image_url") });
+    const [c, o] = claude(chatToClaude(j), "x");
+    if (c !== 200) return send(c, o);
+    const text = o.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+    const calls = o.content.filter((b) => b.type === "tool_use").map((b, i) => ({
+      id: p === "gemini" ? "" : `call_${b.id}`, type: "function", function: { name: b.name, arguments: JSON.stringify(b.input) },
+      ...(p === "gemini" && i === 0 ? { extra_content: { google: { thought_signature: `sig-${++fcSeq}` } } } : {}),
+    }));
+    return send(200, { id: "c", object: "chat.completion", choices: [{ index: 0, finish_reason: calls.length ? (p === "gemini" ? "stop" : "tool_calls") : "stop", message: { role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) } }],
+      usage: { prompt_tokens: 12, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 3 } } });
+  }
+  return send(404, { error: { message: "no route" } });
+}
+
+const r2 = new Map(); // fake Cloudflare R2 (S3 API): /r2/<bucket>/<key>
 http.createServer((req, res) => {
+  if (req.url.startsWith("/r2/")) {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    return req.on("end", () => {
+      const key = decodeURIComponent(req.url.slice(4).split("?")[0]);
+      const auth = req.headers.authorization || "";
+      if (!auth.startsWith("AWS4-HMAC-SHA256 Credential=r2-key/") || !req.headers["x-amz-date"]) { res.statusCode = 403; return res.end("SignatureDoesNotMatch"); }
+      log({ r2: req.method, key });
+      if (req.method === "PUT") { r2.set(key, { body: Buffer.concat(chunks), type: req.headers["content-type"] || "" }); res.statusCode = 200; return res.end(); }
+      const f = r2.get(key);
+      if (req.method === "DELETE") { r2.delete(key); res.statusCode = 204; return res.end(); }
+      if (!f) { res.statusCode = 404; return res.end("NoSuchKey"); }
+      res.setHeader("Content-Type", f.type); return res.end(f.body);
+    });
+  }
   let body = "";
   req.on("data", (c) => (body += c));
   req.on("end", () => {
     const j = body ? JSON.parse(body) : {};
     res.setHeader("Content-Type", "application/json");
     const send = (code, obj) => { res.statusCode = code; res.end(obj === undefined ? "" : JSON.stringify(obj)); };
+    let ai;
+    if ((ai = req.url.match(/^\/ai\/(openai|gemini|deepseek|sarvam|openrouter)(\/[^?]*)/))) return fakeAI(ai[1], ai[2], req, j, send);
     if (req.url.startsWith("/v1/payment_links") || req.url.startsWith("/__rzp/")) return razorpay(req, j, send);
     if (req.url.startsWith("/site")) {
       res.setHeader("Content-Type", "text/html");

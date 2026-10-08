@@ -1,0 +1,15 @@
+# Cloudflare Worker: free plan is enough (100k requests a day, 5 timers).
+# Setup: npm i -g wrangler; wrangler login; then from this folder:
+#   wrangler secret put TURSO_TOKEN
+#   wrangler secret put APP_SECRET          (same value as the app's APP_SECRET)
+#   wrangler deploy
+name = "booking-agent-edge"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+[vars]
+TURSO_URL = "libsql://YOUR-DB.turso.io"
+APP_URL = "https://booking-agent-1-jv73.onrender.com"
+
+[triggers]
+crons = ["* * * * *"]

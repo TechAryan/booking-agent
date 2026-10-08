@@ -377,7 +377,7 @@ async function accountPage(req: Request, u: User, formValues?: FormValues, err?:
   const extendFrom = u.valid_until && u.valid_until >= todayIST() ? u.valid_until : todayIST();
   const steps = [
     ["Business details", ws.business_done],
-    [sharedKey ? `Claude (our key: ${sharedKey.name})` : "Claude", ws.claude_ok],
+    [sharedKey ? `AI: Claude (our key: ${sharedKey.name})` : "AI", ws.claude_ok],
     ["Google Calendar", ws.google_ok],
     ["Test chat", ws.tested],
     ["Widget live", ws.widget_enabled],

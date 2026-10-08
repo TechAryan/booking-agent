@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { deleteFile } from "./storage.js";
 import { db, User, Workspace } from "./db.js";
 import { decrypt, hashPassword, randomToken } from "./security.js";
 import { env } from "./env.js";
@@ -69,7 +70,9 @@ export async function countActiveAdmins(): Promise<number> {
 export async function deleteUser(userId: number) {
   const ws = await db.get<{ id: number }>("SELECT id FROM workspaces WHERE user_id = ?", userId);
   if (ws) {
-    for (const t of ["activity", "services", "holidays", "knowledge", "offers", "bookings", "payment_proofs"]) await db.run(`DELETE FROM ${t} WHERE workspace_id = ?`, ws.id);
+    const files = await db.all<{ r2_key: string }>("SELECT r2_key FROM payment_proofs WHERE workspace_id = ? AND r2_key IS NOT NULL", ws.id);
+    for (const f of files) await deleteFile(f.r2_key).catch((e) => console.error("photo delete", f.r2_key, e?.message));
+    for (const t of ["inbox", "jobs", "connections", "calls", "sites", "do_not_call", "activity", "services", "holidays", "knowledge", "offers", "bookings", "payment_proofs"]) await db.run(`DELETE FROM ${t} WHERE workspace_id = ?`, ws.id);
     await db.run("DELETE FROM conversations WHERE workspace_id = ?", ws.id);
     await db.run("DELETE FROM workspaces WHERE id = ?", ws.id);
   }
@@ -134,6 +137,14 @@ export async function getWorkspaceForUser(userId: number): Promise<Workspace> {
 
 export async function getWorkspaceByPublicId(publicId: string): Promise<(Workspace & { owner: User }) | undefined> {
   const ws = await db.get<Workspace>("SELECT * FROM workspaces WHERE public_id = ?", publicId);
+  if (!ws) return undefined;
+  const owner = await getUser(ws.user_id);
+  if (!owner) return undefined;
+  return { ...ws, owner };
+}
+
+export async function getWorkspaceById(id: number): Promise<(Workspace & { owner: User }) | undefined> {
+  const ws = await db.get<Workspace>("SELECT * FROM workspaces WHERE id = ?", id);
   if (!ws) return undefined;
   const owner = await getUser(ws.user_id);
   if (!owner) return undefined;

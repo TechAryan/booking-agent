@@ -2,7 +2,6 @@ import { Router, Request } from "express";
 import multer from "multer";
 import { DateTime } from "luxon";
 import { checkCsrf, requireLogin } from "../auth.js";
-import { claudeFor } from "../agent.js";
 import { db, logActivity, Workspace } from "../db.js";
 import { env } from "../env.js";
 import {
@@ -81,7 +80,7 @@ extraRoutes.get("/setup/profile", requireLogin, async (req, res) => {
             ${csrfField(req)}
             <label>Website to read</label>
             <input type="text" inputmode="url" autocapitalize="off" spellcheck="false" data-url name="url" value="${w.website}" placeholder="https://yourbusiness.com" required>
-            <div class="row"><button>${w.claude_ok ? "Import" : "Import (connect Claude first)"}</button></div>
+            <div class="row"><button>${w.claude_ok ? "Import" : "Import (connect your AI first)"}</button></div>
           </form>
         </div>
 
@@ -185,13 +184,12 @@ extraRoutes.post("/setup/profile/import", requireLogin, checkCsrf, async (req, r
   const back = "/setup/profile#import";
   const url = cleanUrl(req.body.url || "");
   if (!url) return res.redirect(withMsg(back, "err", "Enter your website address."));
-  if (!w.claude_ok) return res.redirect(withMsg("/setup/claude", "err", "Connect Claude first. It writes the notes from your website."));
+  if (!w.claude_ok) return res.redirect(withMsg("/setup/claude", "err", "Connect your AI first. It writes the notes from your website."));
   if (rateLimited(`import:${w.id}`, 6, 60 * 60_000)) return res.redirect(withMsg(back, "err", "You've imported a few times already. Try again in an hour."));
   try {
     const pages = await crawlSite(url);
     const socials = await Promise.all(Object.values(socialsOf(w)).slice(0, 5).map(async (s) => { const p = await socialPreview(s); return p ? `${s}: ${p}` : ""; }));
-    const { client, model } = await claudeFor(w);
-    const r = await summarizeBusiness(client, model, w, pages, socials);
+    const r = await summarizeBusiness(w, pages, socials);
     if (!r.summary) throw new Error("Couldn't find useful information on that site.");
     await db.run("DELETE FROM knowledge WHERE workspace_id=? AND kind='website' AND source_url=?", w.id, url);
     await addKnowledge(w, "website", `Website: ${new URL(url).hostname}`, r.summary, url);
@@ -358,7 +356,7 @@ extraRoutes.get("/setup/payments", requireLogin, async (req, res) => {
   const q = example ? await quote(w, example) : null;
   const rzSecret = decrypt(w.razorpay_secret_enc);
   const hookSecret = decrypt(w.razorpay_webhook_secret_enc);
-  const hookUrl = `${env.publicUrl}/webhooks/razorpay/${w.public_id}`;
+  const hookUrl = `${env.webhookBase || env.publicUrl}/webhooks/razorpay/${w.public_id}`;
   res.send(
     page(req, {
       title: "Payments",

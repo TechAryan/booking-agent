@@ -10,9 +10,11 @@ import { authRoutes } from "./routes/auth.js";
 import { adminRoutes } from "./routes/admin.js";
 import { setupRoutes } from "./routes/setup.js";
 import { extraRoutes } from "./routes/extras.js";
-import { sweepPayments } from "./bookings.js";
+import { backfillPaymentChecks } from "./bookings.js";
+import { internalRoutes } from "./routes/internal.js";
+import { runDueJobs } from "./jobs.js";
+import { drainInbox } from "./inbox.js";
 import { purgeLoosePhotos } from "./proofs.js";
-import { db as _db } from "./db.js";
 
 const app = express();
 app.set("trust proxy", 1); // behind Railway/Render/Cloudflare
@@ -40,6 +42,7 @@ app.get("/apple-touch-icon.png", (_req, res) => res.sendFile(path.resolve("publi
 
 // Public endpoints (widget + WhatsApp webhook) use their own body parsers, so mount them first.
 app.use(publicRoutes);
+app.use(internalRoutes);
 
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: false, limit: "100kb" }));
@@ -77,13 +80,16 @@ async function main() {
   app.listen(env.port, () => {
     console.log(`🚀 ${env.appName} running at ${env.publicUrl} (port ${env.port}) · database: ${db.kind()}`);
     startKeepAlive();
-    // Confirm payments whose webhook we missed and release slots whose payment link ran out.
+    // While awake, run due jobs (payment checks, calls …) and retry waiting inbox events ourselves.
+    // When asleep, the edge worker's minute timer wakes us through /internal/tick.
+    backfillPaymentChecks().catch((e) => console.error("backfill", e?.message));
     let n = 0;
     const tick = () => {
-      sweepPayments((id) => _db.get("SELECT * FROM workspaces WHERE id=?", id)).catch((e) => console.error("payment sweep", e?.message));
+      runDueJobs().catch((e) => console.error("jobs", e?.message));
+      drainInbox().catch((e) => console.error("drain", e?.message));
       if (n++ % 60 === 0) purgeLoosePhotos().catch(() => undefined); // photos never linked to a booking: gone after 2 days
     };
-    setInterval(tick, Number(process.env.PAYMENT_SWEEP_MS || 60_000)).unref();
+    setInterval(tick, Number(process.env.TICK_MS || process.env.PAYMENT_SWEEP_MS || 60_000)).unref();
   });
 }
 

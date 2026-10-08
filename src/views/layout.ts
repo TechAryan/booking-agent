@@ -21,7 +21,7 @@ export function page(
 <meta name="theme-color" content="${theme === "light" ? "#f5f5f7" : "#000000"}">
 <title>${opts.title} · ${env.appName}</title>
 ${ICON_LINKS}
-<link rel="stylesheet" href="/static/app.css?v=16">
+<link rel="stylesheet" href="/static/app.css?v=17">
 <script>document.documentElement.classList.add("js")</script>
 </head>
 <body class="${u ? "app" : "auth"}">
@@ -51,7 +51,7 @@ ${u ? "" : html`<div class="mesh" aria-hidden="true"><i></i><i></i><i></i></div>
   ${opts.body}
 </main>
 <div class="toasts" id="toasts" aria-live="polite"></div>
-<script src="/static/app.js?v=17"></script>
+<script src="/static/app.js?v=18"></script>
 </body>
 </html>`.toString();
 }

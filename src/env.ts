@@ -16,6 +16,8 @@ export const env = {
     (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : "") ||
     `http://localhost:${process.env.PORT || 3000}`
   ).replace(/\/+$/, ""),
+  // Where providers send webhooks. Set to the edge worker's URL once it's deployed (same paths); defaults to this app.
+  webhookBase: (process.env.WEBHOOK_BASE_URL || "").replace(/\/+$/, ""),
   // Long random string. Encrypts customer API keys at rest. Never change it after launch.
   appSecret: need("APP_SECRET"),
   databasePath: process.env.DATABASE_PATH || "./data/app.db",

@@ -944,3 +944,39 @@ details.advanced-card > .card { box-shadow: none; background: var(--fill); margi
 .send-link { display: flex; align-items: center; gap: 14px; border-left: 4px solid var(--green); }
 .send-link small { display: block; color: var(--text-2); }
 @media (max-width: 600px) { .send-link { flex-direction: column; align-items: stretch; } }
+
+/* v9: Connect your AI */
+.ai-current { margin: 0 0 14px; }
+.ai-current small { display: block; margin-top: 2px; overflow-wrap: anywhere; }
+.ai-pick { display: grid; gap: 10px; margin: 0 0 16px; }
+.ai-rec { display: flex; align-items: center; gap: 14px; padding: 16px 18px; border-radius: 18px; background: var(--card); color: var(--text); text-decoration: none;
+  box-shadow: 0 0 0 1px var(--sep); transition: box-shadow .2s, transform .2s var(--spring); }
+.ai-rec:hover { text-decoration: none; color: var(--text); transform: translateY(-1px); }
+.ai-rec.on { box-shadow: 0 0 0 2px var(--accent), 0 6px 20px color-mix(in srgb, var(--accent) 18%, transparent); }
+.ai-rec .grow { flex: 1; min-width: 0; }
+.ai-rec b { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 16px; }
+.ai-rec small { display: block; color: var(--text-2); font-size: 13px; margin-top: 2px; line-height: 1.4; }
+.ai-others { border-radius: 14px; background: var(--fill); padding: 0 14px; }
+.ai-others > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; min-height: 44px; font-weight: 600; font-size: 14px; color: var(--text-2); }
+.ai-others > summary::-webkit-details-marker { display: none; }
+.ai-others > summary svg { transition: transform .25s var(--spring); transform: rotate(90deg); }
+.ai-others[open] > summary svg { transform: rotate(-90deg); }
+.ai-chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 0 14px; }
+.ai-chips .chip { background: var(--card); }
+.ai-chips .chip.on { background: var(--text); color: var(--bg); }
+.ai-note { padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--orange) 12%, transparent); color: var(--text); font-size: 13px; line-height: 1.45; }
+.tag.rec { background: var(--accent-soft, color-mix(in srgb, var(--accent) 16%, transparent)); color: var(--accent); }
+.tag.cheap { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
+.tag.smart { background: color-mix(in srgb, #af52de 16%, transparent); color: #af52de; }
+.ver-list { display: grid; gap: 8px; margin: 6px 0 10px; }
+.ver { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px; background: var(--fill); cursor: pointer; font-weight: 600; margin: 0;
+  transition: box-shadow .2s, background .2s; }
+.ver input { appearance: auto; -webkit-appearance: radio; width: 18px; height: 18px; min-height: 0; margin: 0; padding: 0; flex: none; background: none; border: 0; box-shadow: none; accent-color: var(--accent); }
+.ver small.vid { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.ver .grow { flex: 1; min-width: 0; }
+.ver small { display: block; font-weight: 400; font-size: 12px; color: var(--text-3); margin-top: 1px; overflow-wrap: anywhere; }
+.ver.on { background: var(--card); box-shadow: 0 0 0 2px var(--accent); }
+.more-ver { display: grid; gap: 8px; margin: 0 0 12px; }
+.more-ver[hidden] { display: none; }
+.more-ver button { justify-self: start; }
+@media (max-width: 560px) { .ai-rec { padding: 14px; gap: 12px; } .ver { padding: 11px 12px; } }

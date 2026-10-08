@@ -50,6 +50,36 @@ The app runs on Render's free plan and keeps its data in Turso's free database, 
 
 **About the free plan:** Render sleeps a free app after 15 idle minutes. The app pings itself every 10 minutes to stay awake. As a backup, add a free monitor (cron-job.org or UptimeRobot) that opens `/healthz` every 5–10 minutes. If it ever does sleep, the first message wakes it in about a minute. Kapso retries webhooks, so nothing is lost. 750 free hours a month covers exactly one app running 24/7.
 
+## Edge worker (keeps webhooks safe while the app sleeps)
+
+Free hosts put the app to sleep, and some providers give up on a webhook after ~50 seconds. The small worker in
+`edge/` runs on Cloudflare's free plan and is always awake: it checks each webhook's signature, saves it to the
+`inbox` table, answers at once, and wakes the app (`/internal/drain`). A timer every minute wakes the app when a job
+is due (payment checks now, reminder calls later). If the database is unreachable it passes the request to the app.
+
+1. `npm i -g wrangler` and `wrangler login` (free Cloudflare account).
+2. In `edge/wrangler.toml` set `TURSO_URL` (same database as the app) and `APP_URL` (this app's address).
+3. From `edge/`: `wrangler secret put TURSO_TOKEN`, `wrangler secret put APP_SECRET` (same value as the app), then `wrangler deploy`.
+4. On Render, set `WEBHOOK_BASE_URL` to the worker's URL (e.g. `https://booking-agent-edge.<you>.workers.dev`), then click **Reconnect** on each business's WhatsApp page so Kapso points at the worker. Razorpay webhooks already set up keep working on the app's own URL.
+
+Without the worker everything still works the same way: the app saves each webhook to the inbox and processes it.
+
+## Choosing the AI
+
+Setup → **Connect your AI**. Claude is first and recommended; Gemini, OpenAI, DeepSeek, Sarvam and OpenRouter sit
+under **Other AI options**, each with its own steps. Pick a version (Recommended / Cheaper / Smartest) or open
+**More versions** to load the live list for your key. **Test and save** checks the key and runs a practice booking
+with pretend tools (the calendar isn't touched). Code: `src/ai/` (one adapter per API format, `providers.ts` for the
+list, `registry.ts` for the connection and usage counts). Chats are stored in one format, so switching AI keeps them.
+Keys for each AI a business tried stay saved (encrypted), so switching back needs no re-paste.
+
+## Photo storage (Cloudflare R2, optional)
+
+Payment screenshots are kept in the database until you add R2 (10 GB free, no download fees):
+Cloudflare → R2 → create bucket `booking-agent-files` → Manage API tokens → **Object Read & Write** on that bucket.
+Put `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` on Render. New photos go to R2;
+older ones keep working from the database. If an upload fails, the photo is saved in the database instead.
+
 ## Moving to Railway later ($5/month, no sleep)
 
 Customers and data stay in Turso, so moving is one command (see the top of `deploy/railway-setup.sh`):
@@ -141,6 +171,13 @@ Add owner numbers on the WhatsApp page. Messages from those numbers go to a cont
 | `render.yaml` | Render free-plan blueprint |
 | `deploy/railway-setup.sh` | One-command Railway setup / move |
 | `tests/` | `npm test` (API, local DB), `npm run test:turso` (Turso client against a local stand-in), `npm run test:ui` (clicks through every screen in a real browser; run `npx playwright install chromium` once first) |
+
+## How background work runs
+
+- **Inbox:** every webhook is saved first (`inbox` table, duplicates dropped), then processed. One customer's messages are handled in order and answered together; failures retry with growing waits, up to 5 times.
+- **Jobs:** anything due later (`jobs` table), one row per thing: e.g. a payment link is checked every minute until it's paid or expires. Workers take rows with a lease, so several app servers never run the same job.
+- **Double bookings:** the free-slot check and the insert happen in one database transaction, so it holds across servers.
+- Tests: `npm test` runs unit checks, then the API suites; `npm run test:turso` also runs the edge worker checks.
 
 ## Not included yet
 

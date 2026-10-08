@@ -3,9 +3,11 @@
 // transaction ID (UTR) hasn't been used before. A screenshot can be faked, so auto-confirming is opt-in per business.
 import { DateTime } from "luxon";
 import { db, logActivity, Workspace } from "./db.js";
-import { claudeFor } from "./agent.js";
+import { aiChat } from "./ai/registry.js";
 import { Booking, confirmManualPayment, notifyOwners } from "./bookings.js";
 import { inr } from "./catalog.js";
+import { randomBytes } from "node:crypto";
+import { deleteFile, getFile, putFile, storageReady } from "./storage.js";
 
 export const MAX_PROOF_BYTES = 3 * 1024 * 1024;
 const MIMES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
@@ -24,8 +26,27 @@ export async function saveProofImage(ws: Workspace, sender: string, buf: Buffer,
   const m = cleanMime(mime);
   if (!m) throw new Error("Please send a photo (JPG or PNG).");
   if (buf.length > MAX_PROOF_BYTES) throw new Error("That image is too large. Please send a smaller screenshot.");
-  const r = await db.run("INSERT INTO payment_proofs (workspace_id, sender, image, mime, caption) VALUES (?,?,?,?,?)", ws.id, sender, buf.toString("base64"), m, caption.slice(0, 300));
+  // With R2 set up the photo goes to file storage and the row keeps only its key; otherwise it stays in the database.
+  let key: string | null = null;
+  if (storageReady()) {
+    key = `proofs/${ws.id}/${Date.now()}-${randomBytes(6).toString("hex")}.${m.split("/")[1]}`;
+    try { await putFile(key, buf, m); } catch (e: any) { console.error("photo upload, keeping it in the database:", e?.message); key = null; }
+  }
+  const r = await db.run("INSERT INTO payment_proofs (workspace_id, sender, image, mime, caption, r2_key) VALUES (?,?,?,?,?,?)",
+    ws.id, sender, key ? "" : buf.toString("base64"), m, caption.slice(0, 300), key);
   return r.lastId;
+}
+
+/** The photo's bytes (base64), wherever it is stored. */
+async function photoData(row: { image: string; r2_key?: string | null }): Promise<string | null> {
+  if (!row.r2_key) return row.image || null;
+  const f = await getFile(row.r2_key);
+  return f ? f.bytes.toString("base64") : null;
+}
+
+/** Removes stored photo files for the given rows (best effort; a failure leaves an orphan, not an error). */
+export async function deletePhotoFiles(keys: (string | null | undefined)[]) {
+  for (const k of keys) if (k) await deleteFile(k).catch((e) => console.error("photo delete", k, e?.message));
 }
 
 /** The newest photo from this sender not yet linked to a booking (within the last 2 hours). */
@@ -45,12 +66,19 @@ export function proofsFor(ws: Workspace, bookingIds: number[]) {
   );
 }
 
-export function proofImage(ws: Workspace, id: number) {
-  return db.get<{ image: string; mime: string; booking_id: number | null }>("SELECT image, mime, booking_id FROM payment_proofs WHERE workspace_id=? AND id=?", ws.id, id);
+export async function proofImage(ws: Workspace, id: number) {
+  const row = await db.get<{ image: string; r2_key: string | null; mime: string; booking_id: number | null }>(
+    "SELECT image, r2_key, mime, booking_id FROM payment_proofs WHERE workspace_id=? AND id=?", ws.id, id);
+  if (!row) return undefined;
+  const image = await photoData(row);
+  return image ? { image, mime: row.mime, booking_id: row.booking_id } : undefined;
 }
 
-export function purgeLoosePhotos() {
-  return db.run("DELETE FROM payment_proofs WHERE booking_id IS NULL AND created_at < datetime('now','-2 days')");
+export async function purgeLoosePhotos() {
+  const old = await db.all<{ id: number; r2_key: string | null }>("SELECT id, r2_key FROM payment_proofs WHERE booking_id IS NULL AND created_at < datetime('now','-2 days')");
+  if (!old.length) return;
+  await deletePhotoFiles(old.map((r) => r.r2_key));
+  await db.run(`DELETE FROM payment_proofs WHERE id IN (${old.map(() => "?").join(",")})`, ...old.map((r) => r.id));
 }
 
 // ---------------------------------------------------------------- reading
@@ -60,10 +88,10 @@ export interface Receipt {
 }
 
 async function readReceipt(ws: Workspace, image: string, mime: string): Promise<Receipt> {
-  const { client, model } = await claudeFor(ws);
-  const res = await client.messages.create({
-    model, max_tokens: 400,
-    tool_choice: { type: "tool", name: "payment_details" },
+  const res = await aiChat(ws, {
+    system: { stable: "You read payment screenshots and report exactly what they show." },
+    maxTokens: 400,
+    forceTool: "payment_details",
     tools: [{
       name: "payment_details",
       description: "What the screenshot shows. Copy values exactly as printed; use empty string / null when not visible. Never guess.",
@@ -84,7 +112,7 @@ async function readReceipt(ws: Workspace, image: string, mime: string): Promise<
     messages: [{
       role: "user",
       content: [
-        { type: "image", source: { type: "base64", media_type: mime as any, data: image } },
+        { type: "image", source: { type: "base64", media_type: mime, data: image } },
         { type: "text", text: "Read this payment screenshot." },
       ],
     }],
@@ -135,10 +163,12 @@ export async function submitCustomerProof(ws: Workspace, b: Booking, proofId: nu
   await db.run("UPDATE payment_proofs SET booking_id=? WHERE id=? AND workspace_id=?", b.id, proofId, ws.id);
   if (b.pay_status === "paid") return { ok: true, status: "already_paid", message: "This booking is already marked as paid. Nothing else to do." };
   if (b.pay_status !== "pending_manual" || b.status !== "confirmed") return { ok: false, message: "This booking isn't waiting for a UPI payment, so I've just saved the photo for the team." };
-  const row = (await db.get<{ image: string; mime: string }>("SELECT image, mime FROM payment_proofs WHERE id=?", proofId))!;
+  const row = (await db.get<{ image: string; r2_key: string | null; mime: string }>("SELECT image, r2_key, mime FROM payment_proofs WHERE id=?", proofId))!;
   let r: Receipt;
   try {
-    r = await readReceipt(ws, row.image, row.mime);
+    const data = await photoData(row);
+    if (!data) throw new Error("The photo file is missing");
+    r = await readReceipt(ws, data, row.mime);
   } catch (e: any) {
     await logActivity(ws.id, "error", b.channel, `Couldn't read screenshot for ${b.ref}: ${e?.message}`);
     await notifyOwners(ws, `🧾 ${b.customer_name} sent a payment screenshot for ${b.ref} (${inr(b.amount)}). Please check it on the Bookings page.`);
@@ -176,5 +206,6 @@ export async function attachOwnerProof(ws: Workspace, b: Booking, proofId: numbe
     confirmed = true;
   }
   await logActivity(ws.id, "payment", "owner", `Payment proof added · ${b.ref}`);
-  return { ok: true, message: `Saved the screenshot as payment proof for ${b.ref}.${confirmed ? " The payment is now marked as received." : ""}` };
+  const note = b.pay_status === "awaiting" ? " Note: this booking is still waiting for its payment link to be paid, so it stays unpaid until then." : "";
+  return { ok: true, message: `Saved the screenshot as payment proof for ${b.ref} (${b.customer_name}).${confirmed ? " The payment is now marked as received." : ""}${note}` };
 }

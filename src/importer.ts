@@ -1,7 +1,8 @@
 import dns from "node:dns/promises";
 import net from "node:net";
 import { Agent, fetch as undiciFetch } from "undici";
-import type Anthropic from "@anthropic-ai/sdk";
+import { aiChat } from "./ai/registry.js";
+import type { ToolUseBlock } from "./ai/types.js";
 import type { Workspace } from "./db.js";
 import { env } from "./env.js";
 import { htmlToText } from "./catalog.js";
@@ -163,12 +164,12 @@ export interface ImportResult {
   pages: number;
 }
 
-export async function summarizeBusiness(client: Anthropic, model: string, ws: Workspace, pages: { url: string; title: string; text: string }[], socials: string[]): Promise<ImportResult> {
+export async function summarizeBusiness(ws: Workspace, pages: { url: string; title: string; text: string }[], socials: string[]): Promise<ImportResult> {
   const material = pages.map((p) => `=== ${p.title || p.url}\n${p.url}\n${p.text}`).join("\n\n").slice(0, 60_000);
   const social = socials.filter(Boolean).join("\n");
-  const res = await client.messages.create({
-    model,
-    max_tokens: 4000,
+  const res = await aiChat(ws, {
+    system: { stable: "You turn business websites into clean notes for a booking assistant." },
+    maxTokens: 4000,
     tools: [{
       name: "save_business_profile",
       description: "Save what you learned about the business.",
@@ -194,13 +195,13 @@ export async function summarizeBusiness(client: Anthropic, model: string, ws: Wo
         required: ["summary_markdown", "services", "contact"],
       },
     }],
-    tool_choice: { type: "tool", name: "save_business_profile" },
+    forceTool: "save_business_profile",
     messages: [{
       role: "user",
       content: `These are pages from the website of "${ws.business_name || "a business"}"${social ? " and previews of its social profiles" : ""}. Extract a clean profile for its booking assistant. Ignore navigation, cookie banners and unrelated text. Don't invent anything.\n\n${material}${social ? `\n\n=== Social profiles\n${social}` : ""}`,
     }],
   });
-  const t = res.content.find((b) => b.type === "tool_use") as Anthropic.ToolUseBlock | undefined;
+  const t = res.content.find((b) => b.type === "tool_use") as ToolUseBlock | undefined;
   const out = (t?.input || {}) as any;
   return {
     summary: String(out.summary_markdown || "").trim(),

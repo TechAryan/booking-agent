@@ -346,7 +346,7 @@
 
   // Guide steps become a checklist the user ticks off (remembered on this device).
   doc.querySelectorAll("ol.guide").forEach(function (ol, n) {
-    var key = "guide:" + location.pathname + ":" + n, saved = {};
+    var key = "guide:" + location.pathname + location.search + ":" + n, saved = {};
     try { saved = JSON.parse(store(key) || "{}"); } catch (e) {}
     var items = ol.querySelectorAll(":scope > li");
     var bar = doc.createElement("div"); bar.className = "guide-progress";
@@ -371,18 +371,49 @@
     refresh();
   });
 
-  // Instant check of the Claude key format.
+  // Instant check of the AI key format (prefix comes from the provider).
   var keyIn = doc.querySelector('form[action="/setup/claude"] [name=api_key]');
   if (keyIn) {
     var hint = doc.createElement("div"); hint.className = "field-hint"; (keyIn.closest(".reveal") || keyIn).insertAdjacentElement("afterend", hint);
+    var pre = keyIn.getAttribute("data-prefix") || "", who = keyIn.getAttribute("data-who") || "These";
     keyIn.addEventListener("input", function () {
       var v = keyIn.value.trim();
       if (!v) { hint.className = "field-hint"; hint.textContent = ""; return; }
-      if (/^sk-ant-[A-Za-z0-9_-]{20,}$/.test(v)) { hint.className = "field-hint ok"; hint.textContent = "✓ Looks like a valid key. Click Test and save."; }
-      else if (v.indexOf("sk-ant-") !== 0) { hint.className = "field-hint bad"; hint.textContent = "Anthropic keys start with sk-ant-"; }
+      if (/\s/.test(v)) { hint.className = "field-hint bad"; hint.textContent = "Remove the spaces; paste only the key."; return; }
+      if (pre && v.indexOf(pre) !== 0 && !(pre.indexOf(v) === 0)) { hint.className = "field-hint bad"; hint.textContent = who + " keys start with " + pre; return; }
+      if (v.length >= pre.length + 20) { hint.className = "field-hint ok"; hint.textContent = "✓ Looks like a valid key. Click Test and save."; }
       else { hint.className = "field-hint"; hint.textContent = "Keep pasting… the key is longer."; }
     });
   }
+
+  // AI version picker: highlight the chosen card, show "More versions", and load the live list on request.
+  doc.querySelectorAll(".ver-list").forEach(function (list) {
+    var form = list.closest("form"), more = form.querySelector(".more-ver");
+    function sync() {
+      list.querySelectorAll(".ver").forEach(function (l) { l.classList.toggle("on", l.querySelector("input").checked); });
+      var other = form.querySelector('input[name=model][value=other]');
+      if (more) { more.hidden = !(other && other.checked); if (!more.hidden) { var t = more.querySelector("[name=model_other]"); t.required = true; } else more.querySelector("[name=model_other]").required = false; }
+    }
+    list.addEventListener("change", sync); sync();
+    var btn = form.querySelector("[data-load-models]");
+    if (!btn) return;
+    btn.addEventListener("click", function () {
+      var msg = form.querySelector("[data-models-msg]"), dl = form.querySelector("#ai-models");
+      var body = new URLSearchParams({ _csrf: form.querySelector("[name=_csrf]").value, provider: btn.getAttribute("data-load-models"), api_key: (form.querySelector("[name=api_key]").value || "").trim() });
+      btn.disabled = true; msg.textContent = "Loading…";
+      fetch("/setup/ai/models", { method: "POST", body: body, headers: { "Content-Type": "application/x-www-form-urlencoded" }, credentials: "same-origin" })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          if (j.error) { msg.textContent = j.error; return; }
+          dl.innerHTML = "";
+          j.models.forEach(function (m) { var o = doc.createElement("option"); o.value = m.id; if (m.label && m.label !== m.id) o.label = m.label; dl.appendChild(o); });
+          msg.textContent = j.models.length + " versions found. Start typing to pick one.";
+          form.querySelector("[name=model_other]").focus();
+        })
+        .catch(function () { msg.textContent = "Couldn't load the list. Type the version name instead."; })
+        .then(function () { btn.disabled = false; });
+    });
+  });
 
   // Drag & drop for the Google key: read it in the browser first, then upload.
   doc.querySelectorAll("[data-dropzone]").forEach(function (dz) {

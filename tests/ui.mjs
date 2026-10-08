@@ -25,6 +25,7 @@ const clearToasts = () => page.evaluate(() => document.querySelectorAll(".toast"
 /** Clicks a submit button, checks the spinner + loading bar appear, then lets the submit go through. */
 async function clickAndSeeSpinner(selector, label) {
   await clearToasts();
+  await page.waitForLoadState("load"); await page.waitForTimeout(300); // the bar resets on "load"; click after it
   await page.evaluate(() => window.addEventListener("submit", (e) => { e.preventDefault(); window.__held = e.target; }, { once: true }));
   await page.locator(`main ${selector}`).and(page.locator('button:not([type=button])')).first().click();
   const spinning = await page.evaluate(() => !!document.querySelector("button.loading") && document.getElementById("progress").classList.contains("on"));
@@ -192,9 +193,9 @@ ok((await toastText()).includes("Business details saved"), "business saved toast
 
 await page.click("ol.guide > li:nth-child(1) .tick-btn");
 await page.click("ol.guide > li:nth-child(2) .tick-btn");
-ok((await page.textContent(".guide-progress")).includes("2 of 5"), "guide steps can be ticked off");
+ok((await page.textContent(".guide-progress")).includes("2 of 4"), "guide steps can be ticked off");
 await page.reload();
-ok((await page.textContent(".guide-progress")).includes("2 of 5"), "ticked steps remembered");
+ok((await page.textContent(".guide-progress")).includes("2 of 4"), "ticked steps remembered");
 await page.fill("input[name=api_key]", "hello");
 ok((await page.textContent(".field-hint")).includes("start with sk-ant-"), "instant key format hint");
 await page.fill("input[name=api_key]", "sk-ant-bad");
@@ -203,6 +204,23 @@ ok((await toastText()).includes("not valid"), "bad Claude key → red error toas
 await page.fill("input[name=api_key]", "sk-ant-good-key-123456");
 await clickAndSeeSpinner("form[data-busy] button", "Save Claude key");
 ok((await toastText()).includes("Claude is connected"), "Claude connected toast");
+{
+  // Connect your AI: other options, version cards, More versions
+  await page.goto(BASE + "/setup/claude?p=gemini");
+  ok(await page.$eval("details.ai-others", (d) => d.open), "Other AI options open when a non-Claude AI is picked");
+  await page.click("label.ver:has-text('More versions')");
+  ok(await page.isVisible(".more-ver"), "More versions reveals the version box");
+  await page.click("label.ver:has-text('Gemini 3.8 Flash')");
+  ok(!(await page.isVisible(".more-ver")) && (await page.$eval("label.ver.on", (l) => l.textContent)).includes("3.8 Flash"), "picking a version card highlights it and hides the box");
+  await shot("07b-ai-gemini");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(BASE + "/setup/claude");
+  const over = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+  ok(!over, "AI page fits a phone screen (no sideways scroll)");
+  await shot("07c-ai-mobile");
+  await page.setViewportSize({ width: 1200, height: 900 });
+  await page.goto(BASE + "/setup/google");
+}
 
 const keyPath = "/tmp/ui-sa.json";
 fs.writeFileSync(keyPath, JSON.stringify({ type: "service_account", client_email: "bot@p.iam.gserviceaccount.com", private_key: "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----\n" }));

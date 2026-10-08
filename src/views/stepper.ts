@@ -15,7 +15,7 @@ export function stepNav(req: Request, active: string, w?: Workspace) {
   const u = req.user!;
   const steps: Step[] = [
     { key: "business", label: "Business", ic: "business", done: !!w?.business_done, optional: false },
-    { key: "claude", label: "Claude", ic: "claude", done: !!w?.claude_ok, optional: false },
+    { key: "claude", label: "AI", ic: "claude", done: !!w?.claude_ok, optional: false },
     { key: "google", label: "Calendar", ic: "calendar", done: !!w?.google_ok, optional: false },
     { key: "test", label: "Test", ic: "test", done: !!w?.tested, optional: false },
     { key: "profile", label: "Profile", ic: "profile", done: !!(w?.address || w?.contact_phone), optional: true },
