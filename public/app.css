@@ -980,3 +980,4 @@ details.advanced-card > .card { box-shadow: none; background: var(--fill); margi
 .more-ver[hidden] { display: none; }
 .more-ver button { justify-self: start; }
 @media (max-width: 560px) { .ai-rec { padding: 14px; gap: 12px; } .ver { padding: 11px 12px; } }
+.storage-line.warn { color: var(--orange); font-weight: 600; }

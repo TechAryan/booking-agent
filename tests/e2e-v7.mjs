@@ -588,5 +588,9 @@ ok(fr2.status === 302 && fr2.loc.startsWith("https://wa.me/919870044444?text=") 
 ok((await anon.req((fwd || "/x").replace(/\/[^/]+$/, "/bad"))).status === 404, "forward link needs the signed token");
 
 }
+if (process.env.R2_ENDPOINT) {
+  r = await admin.page("/admin");
+  ok(r.text.includes("Photo storage (R2)") && r.text.includes("cap reached"), "admin sees R2 use; past the cap new photos stay in the database", r.text.match(/Photo storage[^<]*/)?.[0]);
+}
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -506,6 +506,8 @@ const MIGRATIONS: [string, string, string][] = [
   ["bookings", "call_consent", "INTEGER NOT NULL DEFAULT 0"],
   ["workspaces", "voice_settings", "TEXT"],
   ["payment_proofs", "r2_key", "TEXT"],
+  ["payment_proofs", "bytes", "INTEGER NOT NULL DEFAULT 0"],
+  ["payment_proofs", "purged", "INTEGER NOT NULL DEFAULT 0"],
 ];
 const POST_MIGRATION = `
 CREATE INDEX IF NOT EXISTS conv_customer ON conversations(workspace_id, customer_key);

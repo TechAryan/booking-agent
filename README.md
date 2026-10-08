@@ -57,9 +57,8 @@ Free hosts put the app to sleep, and some providers give up on a webhook after ~
 `inbox` table, answers at once, and wakes the app (`/internal/drain`). A timer every minute wakes the app when a job
 is due (payment checks now, reminder calls later). If the database is unreachable it passes the request to the app.
 
-1. `npm i -g wrangler` and `wrangler login` (free Cloudflare account).
-2. In `edge/wrangler.toml` set `TURSO_URL` (same database as the app) and `APP_URL` (this app's address).
-3. From `edge/`: `wrangler secret put TURSO_TOKEN`, `wrangler secret put APP_SECRET` (same value as the app), then `wrangler deploy`.
+1. In `edge/wrangler.toml` set `APP_URL` (this app's address). From `edge/`: `npx wrangler login` (free Cloudflare account).
+2. `npx wrangler secret put TURSO_URL`, `… TURSO_TOKEN`, `… APP_SECRET` (same values as the app), then `npx wrangler deploy`.
 4. On Render, set `WEBHOOK_BASE_URL` to the worker's URL (e.g. `https://booking-agent-edge.<you>.workers.dev`), then click **Reconnect** on each business's WhatsApp page so Kapso points at the worker. Razorpay webhooks already set up keep working on the app's own URL.
 
 Without the worker everything still works the same way: the app saves each webhook to the inbox and processes it.
@@ -79,6 +78,9 @@ Payment screenshots are kept in the database until you add R2 (10 GB free, no do
 Cloudflare → R2 → create bucket `booking-agent-files` → Manage API tokens → **Object Read & Write** on that bucket.
 Put `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` on Render. New photos go to R2;
 older ones keep working from the database. If an upload fails, the photo is saved in the database instead.
+R2 has no spending cap of its own, so the app keeps one: past `R2_MAX_GB` (default 9, under the free 10 GB) new
+photos stay in the database and the admin page says so. Big screenshots are shrunk to JPEG first, and every
+screenshot's image is deleted after `PHOTO_KEEP_DAYS` (default 180); the amount and UTR stay for checks.
 
 ## Moving to Railway later ($5/month, no sleep)
 

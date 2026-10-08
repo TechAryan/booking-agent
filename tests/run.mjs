@@ -29,7 +29,7 @@ const env = {
 // TEST_DB=turso runs the whole suite against a local stand-in for Turso's HTTP API.
 const children = [];
 // Photos go to the fake R2 in local-DB runs and stay in the database in Turso runs, so both paths are covered.
-if (process.env.TEST_DB !== "turso") Object.assign(env, { R2_ENDPOINT: "http://localhost:4100/r2", R2_ACCESS_KEY_ID: "r2-key", R2_SECRET_ACCESS_KEY: "r2-secret", R2_BUCKET: "booking-agent-files" });
+if (process.env.TEST_DB !== "turso") Object.assign(env, { R2_ENDPOINT: "http://localhost:4100/r2", R2_ACCESS_KEY_ID: "r2-key", R2_SECRET_ACCESS_KEY: "r2-secret", R2_BUCKET: "booking-agent-files", R2_MAX_GB: "0.00000005" }); // ~54 bytes: the cap is reached during the run
 if (process.env.TEST_DB === "turso") {
   Object.assign(env, { TURSO_DATABASE_URL: "http://localhost:4200", TURSO_AUTH_TOKEN: "test-token", FAKE_TURSO_DB: path.join(tmp, "turso.db") });
   children.push(spawn(process.execPath, ["tests/fake-turso.mjs"], { env, stdio: "ignore", detached: true }));

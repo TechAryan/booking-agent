@@ -112,5 +112,23 @@ ok(overlap === null, "an overlapping time is refused");
 const after = await guardedWrite(1, "2030-01-02T11:30", "2030-01-02T12:00", null, async () => "wrote");
 ok(after === "wrote", "the next slot right after is fine");
 
+// ---------- photos: shrink + 6-month clean-up ----------
+{
+  const sharp = (await import("sharp")).default;
+  const { saveProofImage, purgeOldPhotos } = await import("../src/proofs.js");
+  const noise = (await import("node:crypto")).randomBytes(900 * 900 * 3);
+  const big = await sharp(noise, { raw: { width: 900, height: 900, channels: 3 } }).png().toBuffer();
+  const id = await saveProofImage({ id: 1 } as any, "wa:1", big, "image/png");
+  const row = await db.get<any>("SELECT mime, bytes, length(image) AS len FROM payment_proofs WHERE id=?", id);
+  ok(big.length > 200 * 1024 && row.mime === "image/jpeg" && row.bytes < big.length, "big screenshots are shrunk to JPEG before saving", `${big.length} → ${row.bytes} ${row.mime}`);
+  const small = await saveProofImage({ id: 1 } as any, "wa:1", Buffer.from("tiny"), "image/png");
+  ok((await db.get<any>("SELECT mime FROM payment_proofs WHERE id=?", small)).mime === "image/png", "small photos are kept as they are");
+  await db.run("UPDATE payment_proofs SET utr='123412341234', created_at=datetime('now','-200 days') WHERE id=?", id);
+  ok((await purgeOldPhotos()) >= 1, "old screenshots are cleaned up");
+  const after = await db.get<any>("SELECT image, purged, utr FROM payment_proofs WHERE id=?", id);
+  ok(after.image === "" && after.purged === 1 && after.utr === "123412341234", "the photo goes, the payment details stay (duplicate UTR checks still work)");
+  ok((await db.get<any>("SELECT purged FROM payment_proofs WHERE id=?", small)).purged === 0, "recent photos are kept");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

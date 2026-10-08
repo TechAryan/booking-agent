@@ -14,7 +14,7 @@ import { backfillPaymentChecks } from "./bookings.js";
 import { internalRoutes } from "./routes/internal.js";
 import { runDueJobs } from "./jobs.js";
 import { drainInbox } from "./inbox.js";
-import { purgeLoosePhotos } from "./proofs.js";
+import { purgeLoosePhotos, purgeOldPhotos } from "./proofs.js";
 
 const app = express();
 app.set("trust proxy", 1); // behind Railway/Render/Cloudflare
@@ -87,7 +87,10 @@ async function main() {
     const tick = () => {
       runDueJobs().catch((e) => console.error("jobs", e?.message));
       drainInbox().catch((e) => console.error("drain", e?.message));
-      if (n++ % 60 === 0) purgeLoosePhotos().catch(() => undefined); // photos never linked to a booking: gone after 2 days
+      if (n++ % 60 === 0) {
+        purgeLoosePhotos().catch(() => undefined); // photos never linked to a booking: gone after 2 days
+        purgeOldPhotos().catch(() => undefined); // all screenshots: image removed after 6 months (details kept)
+      }
     };
     setInterval(tick, Number(process.env.TICK_MS || process.env.PAYMENT_SWEEP_MS || 60_000)).unref();
   });

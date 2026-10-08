@@ -14,7 +14,7 @@ const MIMES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
 export interface Proof {
   id: number; workspace_id: number; booking_id: number | null; sender: string; mime: string; caption: string;
-  verdict: "unchecked" | "ok" | "mismatch" | "unreadable" | "owner"; amount: number | null; utr: string; payee: string; detail: string; created_at: string;
+  verdict: "unchecked" | "ok" | "mismatch" | "unreadable" | "owner"; amount: number | null; utr: string; payee: string; detail: string; created_at: string; purged: number;
 }
 
 export function cleanMime(m: string) {
@@ -26,15 +26,62 @@ export async function saveProofImage(ws: Workspace, sender: string, buf: Buffer,
   const m = cleanMime(mime);
   if (!m) throw new Error("Please send a photo (JPG or PNG).");
   if (buf.length > MAX_PROOF_BYTES) throw new Error("That image is too large. Please send a smaller screenshot.");
+  let m2 = m;
+  ({ buf, mime: m2 } = await shrink(buf, m));
   // With R2 set up the photo goes to file storage and the row keeps only its key; otherwise it stays in the database.
+  // Below the storage cap only, so R2 can never go past its free 10 GB.
   let key: string | null = null;
-  if (storageReady()) {
-    key = `proofs/${ws.id}/${Date.now()}-${randomBytes(6).toString("hex")}.${m.split("/")[1]}`;
-    try { await putFile(key, buf, m); } catch (e: any) { console.error("photo upload, keeping it in the database:", e?.message); key = null; }
+  if (storageReady() && (await r2Room(buf.length))) {
+    key = `proofs/${ws.id}/${Date.now()}-${randomBytes(6).toString("hex")}.${m2.split("/")[1]}`;
+    try { await putFile(key, buf, m2); r2Used! += buf.length; } catch (e: any) { console.error("photo upload, keeping it in the database:", e?.message); key = null; }
   }
-  const r = await db.run("INSERT INTO payment_proofs (workspace_id, sender, image, mime, caption, r2_key) VALUES (?,?,?,?,?,?)",
-    ws.id, sender, key ? "" : buf.toString("base64"), m, caption.slice(0, 300), key);
+  const r = await db.run("INSERT INTO payment_proofs (workspace_id, sender, image, mime, caption, r2_key, bytes) VALUES (?,?,?,?,?,?,?)",
+    ws.id, sender, key ? "" : buf.toString("base64"), m2, caption.slice(0, 300), key, buf.length);
   return r.lastId;
+}
+
+/** Big photos are resized (max 1600 px) and re-saved as JPEG: still sharp enough to read, about a third of the size. */
+async function shrink(buf: Buffer, mime: string): Promise<{ buf: Buffer; mime: string }> {
+  if (buf.length < 200 * 1024 || mime === "image/gif") return { buf, mime };
+  try {
+    const sharp = (await import("sharp")).default;
+    const out = await sharp(buf).rotate().resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true }).jpeg({ quality: 78, mozjpeg: true }).toBuffer();
+    return out.length < buf.length ? { buf: out, mime: "image/jpeg" } : { buf, mime };
+  } catch {
+    return { buf, mime }; // unreadable by sharp: keep the original
+  }
+}
+
+// ---- R2 safety cap: bytes we keep in R2, counted from the database (refreshed every 10 minutes).
+export const r2CapBytes = () => Math.round(Number(process.env.R2_MAX_GB || 9) * 1024 ** 3);
+let r2Used: number | null = null, r2CountedAt = 0;
+export async function r2UsedBytes(): Promise<number> {
+  if (r2Used === null || Date.now() - r2CountedAt > 10 * 60_000) {
+    const row = await db.get<{ b: number }>("SELECT COALESCE(SUM(bytes),0) AS b FROM payment_proofs WHERE r2_key IS NOT NULL");
+    r2Used = Number(row?.b ?? 0); r2CountedAt = Date.now();
+  }
+  return r2Used;
+}
+async function r2Room(size: number) {
+  const ok = (await r2UsedBytes()) + size <= r2CapBytes();
+  if (!ok && !capHit) console.warn("[storage] R2 cap reached; keeping new photos in the database");
+  capHit = !ok;
+  return ok;
+}
+let capHit = false;
+/** True once a photo was kept out of R2 because of the cap (until one fits again). */
+export const r2CapHit = () => capHit;
+
+/** Screenshots older than PHOTO_KEEP_DAYS (default 180) lose the image; amount, UTR and verdict stay for checks. */
+export async function purgeOldPhotos() {
+  const days = Math.max(30, Number(process.env.PHOTO_KEEP_DAYS || 180));
+  const old = await db.all<{ id: number; r2_key: string | null }>(
+    `SELECT id, r2_key FROM payment_proofs WHERE purged=0 AND created_at < datetime('now','-${days} days') LIMIT 500`);
+  if (!old.length) return 0;
+  await deletePhotoFiles(old.map((r) => r.r2_key));
+  await db.run(`UPDATE payment_proofs SET image='', r2_key=NULL, bytes=0, purged=1 WHERE id IN (${old.map(() => "?").join(",")})`, ...old.map((r) => r.id));
+  r2Used = null; capHit = false;
+  return old.length;
 }
 
 /** The photo's bytes (base64), wherever it is stored. */
@@ -60,7 +107,7 @@ export function latestLoosePhoto(ws: Workspace, sender: string) {
 export function proofsFor(ws: Workspace, bookingIds: number[]) {
   if (!bookingIds.length) return Promise.resolve([] as Proof[]);
   return db.all<Proof>(
-    `SELECT id, workspace_id, booking_id, sender, mime, caption, verdict, amount, utr, payee, detail, created_at FROM payment_proofs
+    `SELECT id, workspace_id, booking_id, sender, mime, caption, verdict, amount, utr, payee, detail, created_at, purged FROM payment_proofs
      WHERE workspace_id=? AND booking_id IN (${bookingIds.map(() => "?").join(",")}) ORDER BY id`,
     ws.id, ...bookingIds
   );
@@ -78,6 +125,7 @@ export async function purgeLoosePhotos() {
   const old = await db.all<{ id: number; r2_key: string | null }>("SELECT id, r2_key FROM payment_proofs WHERE booking_id IS NULL AND created_at < datetime('now','-2 days')");
   if (!old.length) return;
   await deletePhotoFiles(old.map((r) => r.r2_key));
+  r2Used = null;
   await db.run(`DELETE FROM payment_proofs WHERE id IN (${old.map(() => "?").join(",")})`, ...old.map((r) => r.id));
 }
 

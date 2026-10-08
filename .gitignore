@@ -6,3 +6,4 @@ data/
 deploy/railway-secrets.txt
 deploy/update-bundle.zip
 .sync-*.tgz
+.wrangler

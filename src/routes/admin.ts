@@ -15,6 +15,8 @@ import { html, raw } from "../views/html.js";
 import { icon, tile } from "../views/icons.js";
 import { csrfField, page, withMsg } from "../views/layout.js";
 import { MODELS } from "./setup.js";
+import { r2CapBytes, r2CapHit, r2UsedBytes } from "../proofs.js";
+import { storageReady } from "../storage.js";
 
 export const adminRoutes = Router();
 adminRoutes.use("/admin", requireLogin, requireAdmin, checkCsrf);
@@ -101,6 +103,7 @@ adminRoutes.get("/admin", async (req, res) => {
   const liveN = customers.filter((u) => u.setup.startsWith("Live")).length;
   const pendingN = customers.filter((u) => u.payment_status === "pending").length;
   const attention = customers.filter(isSoon).sort((a, b) => (a.valid_until! < b.valid_until! ? -1 : 1));
+  const r2 = storageReady() ? { used: await r2UsedBytes(), cap: r2CapBytes(), hit: r2CapHit() } : null;
   res.send(
     page(req, {
       title: "Admin",
@@ -111,6 +114,7 @@ adminRoutes.get("/admin", async (req, res) => {
           <a class="btn" href="/admin/users/new">${icon("plus", 16)} New account</a>
         </div>
         ${adminNav("accounts")}
+        ${r2 ? html`<p class="muted small storage-line ${r2.hit || r2.used >= r2.cap * 0.9 ? "warn" : ""}">Photo storage (R2): ${(r2.used / 1024 ** 2).toFixed(1)} MB of ${(r2.cap / 1024 ** 3).toFixed(0)} GB safety cap${r2.hit ? " · cap reached, new photos are kept in the database" : r2.used >= r2.cap * 0.9 ? " · nearly full" : ""}</p>` : ""}
         <div class="stats four">
           <a class="stat card" href="/admin?f=all"><span class="tile sm" style="--tile:#007aff">${icon("users", 17)}</span><b data-count="${customers.length}">${customers.length}</b><span>Customers</span></a>
           <a class="stat card" href="/admin?f=active"><span class="tile sm" style="--tile:#34c759">${icon("check", 17)}</span><b data-count="${activeN}">${activeN}</b><span>Active · ${liveN} live</span></a>
