@@ -5,7 +5,7 @@ import { env } from "./env.js";
 import { canInvite, WorkspaceCalendar } from "./calendar.js";
 import { findService, inr, listServices, mapsLink, ownerPhones, quote, Quote, Service } from "./catalog.js";
 import { cancelPaymentLink, createPaymentLink, fetchPaymentLink, razorpayReady, upiReady } from "./payments.js";
-import { sendText } from "./kapso.js";
+import { waSend } from "./wa/registry.js";
 import { decrypt, hmacHex } from "./security.js";
 import { enqueue, onJob } from "./jobs.js";
 
@@ -527,10 +527,9 @@ export async function countPending(ws: Workspace) {
 // ---------------------------------------------------------------- messages out
 
 async function sendWhatsApp(ws: Workspace, phone: string, text: string) {
-  const key = decrypt(ws.kapso_key_enc);
-  if (!key || !ws.kapso_phone_number_id || !phone) return false;
+  if (!phone) return false;
   try {
-    await sendText(key, ws.kapso_phone_number_id, phone, text);
+    await waSend(ws, phone, text);
     return true;
   } catch (e: any) {
     // Usually: more than 24h since they last wrote, so WhatsApp only allows approved templates.

@@ -4,7 +4,9 @@ import { kickDrain, onInbox, saveEvent } from "../inbox.js";
 import { reply, resetConversation } from "../agent.js";
 import { db, logActivity, Workspace } from "../db.js";
 import { env } from "../env.js";
-import { downloadMedia, markRead, sendText } from "../kapso.js";
+import { waConnection, WaConn, waProvider } from "../wa/registry.js";
+import { kapso as kapsoWa } from "../wa/kapso.js";
+import type { Inbound, Recipient } from "../wa/types.js";
 import multer from "multer";
 import { MAX_PROOF_BYTES, proofsFor, saveProofImage, submitCustomerProof } from "../proofs.js";
 import { accessProblem, getWorkspaceById, getWorkspaceByPublicId } from "../models.js";
@@ -140,68 +142,136 @@ publicRoutes.post("/webhooks/kapso/:id", express.raw({ type: "*/*", limit: "2mb"
   kickDrain();
 });
 
-// Stage 1: split a Kapso delivery into one row per customer message (deduped on the WhatsApp message id).
+// ---------- Other WhatsApp providers ----------
+// /webhooks/wa/<provider>/<business>/<secret>: the secret in the path is checked first (several providers don't
+// sign their webhooks); providers that do sign (Meta, Twilio, Gallabox) are checked again when the event is processed.
+async function waHookOwner(provider: string, publicId: string, secret: string) {
+  const ws = await getWorkspaceByPublicId(publicId);
+  if (!ws || ws.wa_provider !== provider) return null;
+  const want = decrypt(ws.wa_hook_secret_enc);
+  return want && secret.length === want.length && safeEqual(secret, want) ? ws : null;
+}
+
+// Meta checks a new webhook address with a GET: echo hub.challenge when the verify token (our secret) matches.
+publicRoutes.get("/webhooks/wa/:provider/:id/:secret", async (req, res) => {
+  const secret = String(req.params.secret);
+  const pws = await getWorkspaceByPublicId(String(req.params.id));
+  const pending = decrypt(pws?.wa_pending_secret_enc ?? null);
+  const ws = (await waHookOwner(String(req.params.provider), String(req.params.id), secret)) ?? (pending && pending.length === secret.length && safeEqual(pending, secret) ? pws : null);
+  if (!ws) return res.sendStatus(404);
+  if (req.query["hub.mode"] === "subscribe" && req.query["hub.verify_token"] === req.params.secret) return res.type("text/plain").send(String(req.query["hub.challenge"] ?? ""));
+  res.sendStatus(200);
+});
+
+publicRoutes.post("/webhooks/wa/:provider/:id/:secret", express.raw({ type: "*/*", limit: "3mb" }), async (req, res) => {
+  const provider = String(req.params.provider);
+  const ws = await waHookOwner(provider, String(req.params.id), String(req.params.secret));
+  if (!ws) return res.sendStatus(404);
+  const raw = req.body as Buffer;
+  // Twilio signs the exact address it called: ours, or the edge worker's when the worker passed this on.
+  const urlBase = req.header("X-Booking-Edge") === "1" && env.webhookBase ? env.webhookBase : env.publicUrl;
+  await saveEvent(ws.id, "wh:wa", sha(raw), "", rawEvent(pickHeaders(req.headers as any, provider, urlBase + req.originalUrl), raw.toString("utf8")));
+  const ack = waProvider(provider)?.ackBody;
+  ack ? res.type(ack.type).send(ack.body) : res.sendStatus(200);
+  kickDrain();
+});
+
+/** Headers we keep with a raw webhook (the edge worker keeps the same ones). */
+export function pickHeaders(h: Record<string, string | undefined>, provider: string, url: string): Record<string, string> {
+  const out: Record<string, string> = { provider, url };
+  for (const k of ["x-hub-signature-256", "x-twilio-signature", "x-gallabox-signature", "x-event-name", "content-type"]) if (h[k]) out[k] = String(h[k]);
+  return out;
+}
+
+// Stage 1 (other providers): check the provider's own signature, then one row per customer message.
+onInbox("wh:wa", async (rows) => {
+  for (const row of rows) {
+    const live = await liveForId(row.workspace_id, "whatsapp");
+    if (!live) continue;
+    const { headers, body } = JSON.parse(row.body);
+    const conn = await waConnection(live);
+    if (!conn || conn.provider.id !== headers.provider) continue;
+    const rawHook = { headers, body, url: headers.url };
+    if (conn.provider.verify && !conn.provider.verify(conn.values, rawHook, decrypt(live.wa_hook_secret_enc) ?? "")) {
+      console.warn(`[whatsapp ${live.public_id}] ${conn.provider.id} signature check failed; ignored`);
+      continue;
+    }
+    await queueMessages(live.id, conn.provider.parse(rawHook));
+  }
+  kickDrain();
+});
+
+// Stage 1 (Kapso): same, from Kapso's format.
 onInbox("wh:kapso", async (rows) => {
   for (const row of rows) {
     const live = await liveForId(row.workspace_id, "whatsapp");
     if (!live) continue;
     const { headers, body } = JSON.parse(row.body);
     if (headers.event && headers.event !== "whatsapp.message.received") continue;
-    let payload: any;
-    try { payload = JSON.parse(body); } catch { continue; }
-    const items: any[] = payload?.batch && Array.isArray(payload.data) ? payload.data : [payload];
-    for (const item of items) {
-      const msg = item?.message;
-      if (!msg?.id || msg?.kapso?.direction === "outbound") continue;
-      const phone = String(msg.from ?? item?.conversation?.phone_number ?? "").replace(/[^\d]/g, "");
-      if (!phone) continue;
-      await saveEvent(row.workspace_id, "wa:kapso", String(msg.id), `wa:${phone}`, JSON.stringify(item));
-    }
+    await queueMessages(live.id, kapsoWa.parse({ headers, body, url: "" }));
   }
   kickDrain();
 });
 
-// Stage 2: one customer's waiting messages, answered together (several quick messages = one reply).
+async function queueMessages(wsId: number, msgs: Inbound[]) {
+  for (const m of msgs) {
+    const who = m.phone || m.user;
+    if (!m.id || !who) continue;
+    await saveEvent(wsId, "wa:msg", m.id, `wa:${who}`, JSON.stringify(m));
+  }
+  if (msgs.length) await db.run("UPDATE workspaces SET wa_hook_at=? WHERE id=?", Date.now(), wsId);
+}
+
+// Rows queued by the previous version (Kapso item JSON) are converted, so nothing in flight is lost on deploy.
 onInbox("wa:kapso", async (rows) => {
+  for (const row of rows) for (const m of kapsoWa.parse({ headers: {}, body: row.body, url: "" })) await saveEvent(row.workspace_id, "wa:msg", m.id, row.group_key, JSON.stringify(m));
+  kickDrain();
+});
+
+// Stage 2: one customer's waiting messages, answered together (several quick messages = one reply).
+onInbox("wa:msg", async (rows) => {
   const live = await liveForId(rows[0]!.workspace_id, "whatsapp");
   if (!live) return;
-  const phone = rows[0]!.group_key.replace(/^wa:/, "");
+  const conn = await waConnection(live);
+  if (!conn) return;
+  const who = rows[0]!.group_key.replace(/^wa:/, "");
+  const first = JSON.parse(rows[0]!.body) as Inbound;
+  const to: Recipient = first.phone ? { phone: first.phone } : { user: first.user };
+  const phone = first.phone ?? "";
   // An owner can switch sides with "/customer …": keep owner and customer messages in separate replies.
-  const isOwner = ownerPhones(live).includes(phone);
+  const isOwner = !!phone && ownerPhones(live).includes(phone);
   const groups: WaGroup[] = [];
   let mode = "";
   for (const row of rows) {
-    const item = JSON.parse(row.body);
-    const msg = item.message;
-    const text = msg.text?.body ?? (msg.type === "text" ? msg.kapso?.content : "") ?? "";
-    const m = isOwner && /^\/customer\b/i.test(text) ? "customer" : "same";
-    if (!groups.length || (m === "customer") !== (mode === "customer")) groups.push({ ids: [], texts: [], images: [], nonText: false });
-    mode = m;
+    const m = JSON.parse(row.body) as Inbound;
+    const text = m.text ?? "";
+    const md = isOwner && /^\/customer\b/i.test(text) ? "customer" : "same";
+    if (!groups.length || (md === "customer") !== (mode === "customer")) groups.push({ ids: [], texts: [], images: [], nonText: false });
+    mode = md;
     const g = groups[groups.length - 1]!;
-    g.ids.push(msg.id);
+    g.ids.push(m.id);
     if (text) g.texts.push(text);
-    else if (msg.type === "image" && msg.image?.id) g.images.push({ id: String(msg.image.id), mime: String(msg.image.mime_type || "image/jpeg"), caption: String(msg.image.caption || "") });
+    else if (m.image?.ref) g.images.push(m.image);
     else g.nonText = true;
-    g.name = item?.conversation?.kapso?.contact_name ?? g.name;
+    g.name = m.name ?? g.name;
   }
-  for (const g of groups) await handleWhatsApp(live, phone, g);
+  for (const g of groups) await handleWhatsApp(live, conn, who, phone, to, g);
 });
 
-type WaGroup = { ids: string[]; texts: string[]; images: { id: string; mime: string; caption: string }[]; name?: string; nonText: boolean };
+type WaGroup = { ids: string[]; texts: string[]; images: { ref: string; mime: string; caption: string }[]; name?: string; nonText: boolean };
 
-async function handleWhatsApp(ws: Workspace, phone: string, g: WaGroup) {
-  const key = decrypt(ws.kapso_key_enc)!;
-  const pnid = ws.kapso_phone_number_id!;
-  markRead(key, pnid, g.ids[g.ids.length - 1]);
+async function handleWhatsApp(ws: Workspace, conn: WaConn, who: string, phone: string, to: Recipient, g: WaGroup) {
+  const { provider: pv, values } = conn;
+  pv.markRead?.(values, g.ids[g.ids.length - 1]!).catch(() => undefined);
   let out: string;
-  const isOwnerNumber = ownerPhones(ws).includes(phone);
+  const isOwnerNumber = !!phone && ownerPhones(ws).includes(phone);
   const ownerSide = isOwnerNumber && !/^\/customer\b/i.test(g.texts[0] || "");
   // Photos (usually payment screenshots) are saved; the assistant decides which booking they belong to.
   const notes: string[] = [];
   for (const im of g.images.slice(0, 3)) {
     try {
-      const buf = await downloadMedia(key, pnid, im.id);
-      await saveProofImage(ws, ownerSide ? `owner:${phone}` : `wa:${phone}`, buf, im.mime, im.caption);
+      const file = await pv.media(values, im.ref);
+      await saveProofImage(ws, ownerSide ? `owner:${who}` : `wa:${who}`, file.bytes, file.mime && file.mime.startsWith("image/") ? file.mime : im.mime, im.caption);
       notes.push(`[Sent a photo${im.caption ? `: "${im.caption.slice(0, 200)}"` : ""}]`);
     } catch (e: any) {
       console.warn(`[whatsapp ${ws.public_id}] photo`, e?.message);
@@ -212,15 +282,14 @@ async function handleWhatsApp(ws: Workspace, phone: string, g: WaGroup) {
   if (!text) {
     out = "I can read text and photos for now. Please type your request 🙂";
   } else if (text.toLowerCase() === "/reset") {
-    await resetConversation(ws.id, "whatsapp", phone);
+    await resetConversation(ws.id, "whatsapp", who);
     out = "Conversation reset. How can I help?";
   } else {
     try {
       // The owner's own number manages the business; "/customer …" lets them try the customer side.
-      const isOwner = isOwnerNumber;
-      const asCustomer = isOwner && /^\/customer\b/i.test(text);
+      const asCustomer = isOwnerNumber && /^\/customer\b/i.test(text);
       const msg = asCustomer ? text.replace(/^\/customer\b\s*/i, "") || "Hi" : text;
-      out = await reply(ws, "whatsapp", phone, msg, { trustedPhone: phone, contactName: g.name, asOwner: isOwner && !asCustomer });
+      out = await reply(ws, "whatsapp", who, msg, { trustedPhone: phone, contactName: g.name, asOwner: isOwnerNumber && !asCustomer });
     } catch (e: any) {
       console.error(`[whatsapp ${ws.public_id}]`, e);
       await logActivity(ws.id, "error", "whatsapp", e.message);
@@ -228,14 +297,12 @@ async function handleWhatsApp(ws: Workspace, phone: string, g: WaGroup) {
     }
   }
   try {
-    await sendText(key, pnid, phone, out);
+    await pv.sendText(values, to, out);
   } catch (e: any) {
     console.error(`[whatsapp ${ws.public_id}] send failed`, e?.message);
-    await logActivity(ws.id, "error", "whatsapp", `Send failed: ${e?.message}`);
+    await logActivity(ws.id, "error", "whatsapp", `Send failed (${pv.name}): ${e?.message}`);
   }
 }
-
-
 
 // ---------- Razorpay ----------
 

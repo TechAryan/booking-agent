@@ -72,6 +72,16 @@ with pretend tools (the calendar isn't touched). Code: `src/ai/` (one adapter pe
 list, `registry.ts` for the connection and usage counts). Chats are stored in one format, so switching AI keeps them.
 Keys for each AI a business tried stay saved (encrypted), so switching back needs no re-paste.
 
+## WhatsApp providers
+
+Setup → **Connect WhatsApp**. Kapso is first (recommended); Meta direct (cheapest), Twilio, Gupshup, 360dialog,
+WATI, Gallabox and Exotel are under "Already use another WhatsApp provider?". Each has its own steps and fields.
+**Connect** checks the details and sets the webhook where the provider allows it (Meta, 360dialog, Twilio, Gupshup,
+WATI); Gallabox and Exotel show the exact address to paste. Webhook addresses are
+`/webhooks/wa/<provider>/<business>/<secret>`: the secret is checked first (the edge worker does this too), and
+Meta, Twilio and Gallabox signatures are checked again when the message is processed. Code: `src/wa/`.
+WATI, Gallabox and Exotel are marked Beta until confirmed with real accounts.
+
 ## Photo storage (Cloudflare R2, optional)
 
 Payment screenshots are kept in the database until you add R2 (10 GB free, no download fees):

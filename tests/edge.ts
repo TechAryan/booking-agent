@@ -60,6 +60,7 @@ let done = false;
 for (let i = 0; i < 30 && !done; i++) { await sleep(200); done = (await db.execute("SELECT status FROM jobs WHERE ref='BK-NOSUCH'")).rows[0]?.status === "done"; }
 ok(done, "and the job runs");
 
+
 // Database unreachable: the edge passes the request straight to the app.
 const body2 = msg("wamid.edge2", "919722222222", "fallback please");
 r = await send(body2, sign(body2), { ...env, TURSO_URL: "http://localhost:1" });

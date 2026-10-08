@@ -6,6 +6,7 @@ import { reply, resetConversation } from "../agent.js";
 import { aiConnection, listModels, saveAIConnection, savedKeyFor, testAI, usageThisMonth } from "../ai/registry.js";
 import { DEFAULT_PROVIDER, PROVIDERS, providerById, versionLabel } from "../ai/providers.js";
 import { razorpayHookMoved } from "../payments.js";
+import { savedValues, saveValues, waConnection, waHookUrl, waProvider, WA_PROVIDERS } from "../wa/registry.js";
 import { missingGoogleScopes, googleAuthUrl, googleExchange, googleRevoke, googleSignInEnabled, listWritableCalendars, parseServiceAccount, testCalendarFor } from "../calendar.js";
 import { db, logActivity, Workspace } from "../db.js";
 import { env } from "../env.js";
@@ -167,6 +168,15 @@ function firstName(name: string): string {
   const parts = (name || "").replace(/\(.*?\)/g, " ").trim().split(/\s+/).filter(Boolean);
   const p = parts.find((w) => !/^(dr|mr|mrs|ms|miss|prof)\.?$/i.test(w));
   return p ?? "";
+}
+
+/** "5 min ago" for a millisecond timestamp. */
+function agoMs(ms: number) {
+  const mins = Math.max(0, Math.round((Date.now() - ms) / 60_000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  if (mins < 1440) return `${Math.round(mins / 60)} h ago`;
+  return `${Math.round(mins / 1440)} days ago`;
 }
 
 function ago(sqliteUtc: string): string {
@@ -791,57 +801,121 @@ setupRoutes.get("/setup/whatsapp", requireLogin, async (req, res) => {
   const w = await ws(req);
   if (!req.user!.perm_whatsapp) return res.redirect(withMsg("/", "err", "WhatsApp isn't included in your plan."));
   const block = notReady(w);
+  const conn = w.whatsapp_enabled ? await waConnection(w) : null;
+  const current = conn?.provider.id ?? w.wa_provider ?? "kapso";
+  const p = waProvider(String(req.query.p || "")) ?? waProvider(current) ?? WA_PROVIDERS[0]!;
+  const others = WA_PROVIDERS.filter((x) => x.id !== "kapso");
+  const live = !!conn && conn.provider.id === p.id;
   const key = decrypt(w.kapso_key_enc);
+  const status = conn
+    ? w.wa_hook_at
+      ? html`<p class="hook-status ok">${icon("check", 14)} <b>Receiving messages</b> · last one ${agoMs(w.wa_hook_at)}</p>`
+      : html`<p class="hook-status wait">${icon("clock", 14)} <b>Waiting for the first message.</b> Send one from your phone to check.</p>`
+    : "";
+  let section: Safe;
+  if (p.id === "kapso") {
+    section = html`
+      <details class="card advanced-card" ${live ? "" : "open"}>
+        <summary><b>Part A: create a Kapso account and connect a number</b>${live ? html`<span class="hint">Done · open to see the steps again</span>` : ""}</summary>
+        <ol class="guide">
+          <li>Sign up at <a href="https://app.kapso.ai" target="_blank" rel="noopener">app.kapso.ai</a>.</li>
+          <li>Go to <b>Phone numbers</b> → <b>Set up</b>. You need a Facebook account for the next part. Then choose one:
+            <ul>
+              <li><b>Instant setup with US digital number</b>: fastest, no SIM needed. Your customers see a +1 number.</li>
+              <li><b>Connect my own SIM card</b>: use your own number. It must <u>not</u> be active on the normal WhatsApp app. You'll get a text code to verify it.</li>
+              <li><b>Connect WhatsApp Business App</b>: keep using the Business app on your phone, and the assistant replies too.</li>
+            </ul>
+          </li>
+          <li>Click <b>Get and set up phone number</b> and log in to Facebook in the window that opens.</li>
+          <li>Create a <b>business portfolio</b> (your business name), then a <b>WhatsApp Business account</b> with the <b>display name</b> customers will see.</li>
+          <li>Pick your number: a <b>+1 "Verified"</b> one for the US option, or enter your own number and type the code you get. Accept the permissions and click <b>Finish</b>.</li>
+        </ol>
+        <p class="hint">Just testing? Kapso has a free <b>Sandbox</b> number (no Facebook needed). Open it under Phone numbers → Sandbox sessions → Add session, enter your WhatsApp number, then send the activation code from that phone within a few minutes (codes expire).</p>
+      </details>
+      <div class="card" id="connect">
+        <h2>${live ? "Connection" : "Part B: copy two values from Kapso"}</h2>
+        ${live ? "" : html`<ol class="guide">
+          <li><b>Phone number ID</b>: in Kapso, open <b>Phone numbers</b>, click your number and copy <b>PHONE NUMBER ID</b>. It's a long number, not the phone number itself.</li>
+          <li><b>API key</b>: in the left sidebar open <b>API keys → Create API key</b>, name it <code>booking-agent</code> and copy it. It's shown only once.</li>
+          <li>Paste both below and click <b>Connect</b>. We set up everything else automatically.</li>
+        </ol>`}
+        <form method="post" action="/setup/whatsapp" data-busy="Connecting WhatsApp…">
+          ${csrfField(req)}
+          <label>Phone number ID</label>
+          <input type="text" name="phone_number_id" value="${w.kapso_phone_number_id ?? ""}" placeholder="597907523413541" required inputmode="numeric">
+          <label>Kapso API key ${key ? html`<span class="hint">connected: ${mask(key)} · leave empty to keep</span>` : ""}</label>
+          <input type="password" name="api_key" autocomplete="off" ${key ? "" : "required"}>
+          <div class="row"><button>${live ? "Reconnect" : "Connect"}</button></div>
+        </form>
+        <p class="muted small">Prices change; check <a href="${p.pricingUrl}" target="_blank" rel="noopener">Kapso's pricing page</a>.</p>
+      </div>`;
+  } else {
+    const saved = (await savedValues(w, p.id)) ?? {};
+    const secret = live ? decrypt(w.wa_hook_secret_enc) : null;
+    const hookUrl = secret ? waHookUrl(w, p.id, secret) : "";
+    const fill = (s: string) => s.replace("{url}", "\u0000URL\u0000").replace("{secret}", "\u0000SECRET\u0000").replace("{number}", (saved.number || "").replace(/[^\d]/g, ""));
+    const manual = live && p.manualWebhook
+      ? html`<div class="card" id="webhook">
+          <h2>${p.connectWebhook ? "If messages don't arrive" : "Last step: add the webhook"} in ${p.name}</h2>
+          <ol class="guide plain">${p.manualWebhook.map((s) => {
+            const parts = fill(s).split(/\u0000(URL|SECRET)\u0000/);
+            return html`<li>${parts.map((x, i) => (i % 2 === 0 ? md(x) : x === "URL"
+              ? html`<span class="mono" style="user-select:all;overflow-wrap:anywhere">${hookUrl}</span> <button type="button" class="secondary small" data-copy="${hookUrl}">Copy</button>`
+              : html`<span class="mono" style="user-select:all">${secret}</span> <button type="button" class="secondary small" data-copy="${secret}">Copy</button>`))}</li>`;
+          })}</ol>
+        </div>`
+      : "";
+    section = html`
+      <div class="card" id="connect">
+        <h2>Connect ${p.name} ${p.tag ? html`<span class="tag ${p.tag === "Beta" ? "warn" : ""}">${p.tag}</span>` : ""}</h2>
+        <p class="muted">${p.blurb}</p>
+        ${p.note ? html`<p class="ai-note">${p.note}</p>` : ""}
+        ${p.tag === "Beta" ? html`<p class="ai-note">Beta: we've built this to ${p.name}'s published docs and checked it with test messages. Tell us if anything looks off after your first real messages.</p>` : ""}
+        <ol class="guide">${p.steps.map((s) => html`<li>${md(s)}</li>`)}</ol>
+        <p class="muted small">Prices change; check <a href="${p.pricingUrl}" target="_blank" rel="noopener">${p.name}'s pricing page</a>.</p>
+      </div>
+      <div class="card">
+        <form method="post" action="/setup/whatsapp/p/${p.id}" data-busy="Connecting ${p.name}…">
+          ${csrfField(req)}
+          ${p.fields.map((f) => html`
+            <label>${f.label} ${f.secret && saved[f.key] ? html`<span class="hint">saved: <span class="mono">${mask(saved[f.key]!)}</span> · leave empty to keep</span>` : f.hint ? html`<span class="hint">${f.hint}</span>` : ""}</label>
+            <input type="${f.secret ? "password" : "text"}" name="${f.key}" value="${f.secret ? "" : saved[f.key] ?? ""}" placeholder="${f.placeholder ?? ""}" autocomplete="off" spellcheck="false" ${f.optional || (f.secret && saved[f.key]) ? "" : "required"}>`)}
+          <div class="row"><button>${live ? "Reconnect" : "Connect"}</button></div>
+        </form>
+      </div>
+      ${manual}`;
+  }
   res.send(
     page(req, {
       title: "Connect WhatsApp",
       body: html`${stepNav(req, "whatsapp", w)}
         <div class="page-head">${tile("whatsapp", "lg")}<div><p class="eyebrow">Channel · optional</p><h1>Connect WhatsApp</h1></div></div>
-        <p class="sub">Customers message your WhatsApp number and the assistant books them in. We use Kapso, an official WhatsApp Business partner. About 15 minutes.</p>
+        <p class="sub">Customers message your WhatsApp number and the assistant books them in. Pick the WhatsApp provider you use, or start with Kapso.</p>
         ${block ?? html`
-          ${w.whatsapp_enabled
-            ? html`<div class="flash ok">WhatsApp is live on <b>${w.kapso_display_number || w.kapso_phone_number_id}</b>. Send it a message to try it.</div>`
-            : ""}
-          <details class="card advanced-card" ${w.whatsapp_enabled ? "" : "open"}>
-            <summary><b>Part A: create a Kapso account and connect a number</b>${w.whatsapp_enabled ? html`<span class="hint">Done · open to see the steps again</span>` : ""}</summary>
-            <ol class="guide">
-              <li>Sign up at <a href="https://app.kapso.ai" target="_blank" rel="noopener">app.kapso.ai</a>.</li>
-              <li>Go to <b>Phone numbers</b> → <b>Set up</b>. You need a Facebook account for the next part. Then choose one:
-                <ul>
-                  <li><b>Instant setup with US digital number</b>: fastest, no SIM needed. Your customers see a +1 number.</li>
-                  <li><b>Connect my own SIM card</b>: use your own number. It must <u>not</u> be active on the normal WhatsApp app. You'll get a text code to verify it.</li>
-                  <li><b>Connect WhatsApp Business App</b>: keep using the Business app on your phone, and the assistant replies too.</li>
-                </ul>
-              </li>
-              <li>Click <b>Get and set up phone number</b> and log in to Facebook in the window that opens.</li>
-              <li>Create a <b>business portfolio</b> (your business name), then a <b>WhatsApp Business account</b> with the <b>display name</b> customers will see.</li>
-              <li>Pick your number: a <b>+1 "Verified"</b> one for the US option, or enter your own number and type the code you get. Accept the permissions and click <b>Finish</b>.</li>
-            </ol>
-            <p class="hint">Just testing? Kapso has a free <b>Sandbox</b> number (no Facebook needed). Open it under Phone numbers → Sandbox sessions → Add session, enter your WhatsApp number, then send the activation code from that phone within a few minutes (codes expire).</p>
-          </details>
-          <div class="card">
-            <h2>${w.whatsapp_enabled ? "Connection" : "Part B: copy two values from Kapso"}</h2>
-            ${w.whatsapp_enabled ? "" : html`<ol class="guide">
-              <li><b>Phone number ID</b>: in Kapso, open <b>Phone numbers</b>, click your number and copy <b>PHONE NUMBER ID</b>. It's a long number, not the phone number itself.</li>
-              <li><b>API key</b>: in the left sidebar open <b>API keys → Create API key</b>, name it <code>booking-agent</code> and copy it. It's shown only once.</li>
-              <li>Paste both below and click <b>Connect</b>. We set up everything else automatically.</li>
-            </ol>`}
-            <form method="post" action="/setup/whatsapp" data-busy="Connecting WhatsApp…">
-              ${csrfField(req)}
-              <label>Phone number ID</label>
-              <input type="text" name="phone_number_id" value="${w.kapso_phone_number_id ?? ""}" placeholder="597907523413541" required inputmode="numeric">
-              <label>Kapso API key ${key ? html`<span class="hint">connected: ${mask(key)} · leave empty to keep</span>` : ""}</label>
-              <input type="password" name="api_key" autocomplete="off" ${key ? "" : "required"}>
-              <div class="row"><button>${w.whatsapp_enabled ? "Reconnect" : "Connect"}</button></div>
-            </form>
+          ${conn ? html`<div class="flash ok">WhatsApp is live on <b>${conn.display || "your number"}</b> through ${conn.provider.name}. Send it a message to try it.</div>${status}` : ""}
+          <div class="ai-pick">
+            <a class="ai-rec ${p.id === "kapso" ? "on" : ""}" href="/setup/whatsapp?p=kapso#connect">
+              ${tile("whatsapp", "lg")}
+              <span class="grow"><b>Kapso <span class="tag rec">Recommended</span></b>
+              <small>Free to start and the simplest setup, with a free sandbox number for testing. Cheapest: Meta direct (no platform fee, harder setup).</small></span>
+              ${p.id === "kapso" ? html`<span class="sn-tick">${icon("check", 13)}</span>` : icon("chevron", 14)}
+            </a>
+            <details class="ai-others" ${p.id !== "kapso" ? "open" : ""}>
+              <summary>Already use another WhatsApp provider? ${icon("chevron", 13)}</summary>
+              <div class="chips ai-chips">
+                ${others.map((x) => html`<a class="chip ${x.id === p.id ? "on" : ""}" href="/setup/whatsapp?p=${x.id}#connect">${x.name}${x.tag === "Cheapest" ? html` <i>cheapest</i>` : x.tag === "Beta" ? html` <i>beta</i>` : ""}${conn?.provider.id === x.id ? html` <i>connected</i>` : ""}</a>`)}
+              </div>
+              <p class="muted small" style="padding-bottom:12px">Only providers that can receive messages and send normal replies are listed. AiSensy and Interakt can't send normal replies, so the assistant can't chat through them; move your number to Kapso instead (your number and name stay the same).</p>
+            </details>
           </div>
+          ${section}
           <div class="card" id="owners">
             <div class="page-head tight">${tile("lock")}<div><h2>Owner numbers</h2></div></div>
             <p class="muted">Messages from these numbers are treated as <b>you</b>, not a customer. From WhatsApp you can then ask things like “show my services”, “make Facial ₹900”, “20% off for everyone this Diwali week”, “close on 25 Dec” or “what's booked tomorrow?”. You'll also get alerts for new bookings and payments (within 24 hours of your last message, as WhatsApp only allows that).</p>
             <form method="post" action="/setup/whatsapp/owners" data-busy="Saving…">
               ${csrfField(req)}
               <label>Owner WhatsApp numbers <span class="hint">with country code, separate several with commas</span></label>
-              <input type="text" name="owner_phones" value="${ownerPhones(w).map((p) => `+${p}`).join(", ")}" placeholder="+91 98765 43210" autocomplete="off">
+              <input type="text" name="owner_phones" value="${ownerPhones(w).map((x) => `+${x}`).join(", ")}" placeholder="+91 98765 43210" autocomplete="off">
               <div class="row"><button class="secondary">Save owner numbers</button></div>
             </form>
           </div>
@@ -863,6 +937,65 @@ setupRoutes.get("/setup/whatsapp", requireLogin, async (req, res) => {
     })
   );
 });
+
+/** Connect a non-Kapso provider: check the details, point its webhook at us, switch the old provider off. */
+setupRoutes.post("/setup/whatsapp/p/:provider", requireLogin, checkCsrf, async (req, res) => {
+  const w = await ws(req);
+  const p = waProvider(String(req.params.provider));
+  if (!p || p.id === "kapso") return res.redirect("/setup/whatsapp");
+  const back = `/setup/whatsapp?p=${p.id}`;
+  if (!req.user!.perm_whatsapp || !isReady(w)) return res.redirect(back);
+  if (rateLimited(`wa:${w.id}`, Number(process.env.AI_TEST_LIMIT || 10), 10 * 60_000)) return res.redirect(withMsg(back, "err", "Too many tries. Wait a few minutes."));
+  const saved = (await savedValues(w, p.id)) ?? {};
+  const v: Record<string, string> = {};
+  for (const f of p.fields) {
+    const given = String(req.body[f.key] ?? "").trim();
+    const val = given || (f.secret ? saved[f.key] ?? "" : "");
+    if (!val && !f.optional) return res.redirect(withMsg(back, "err", `Fill in ${f.label}.`));
+    if (val && f.pattern && !f.pattern.test(val)) return res.redirect(withMsg(back, "err", f.patternMsg ?? `${f.label} doesn't look right.`));
+    if (val) v[f.key] = val;
+  }
+  try {
+    const { display } = await p.check(v);
+    const keepSecret = w.wa_provider === p.id ? decrypt(w.wa_hook_secret_enc) : null;
+    const secret = keepSecret || randomToken(24).replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
+    const url = waHookUrl(w, p.id, secret);
+    if (!/^https:\/\//.test(url) && env.isProd) throw new Error("PUBLIC_URL must be https for WhatsApp.");
+    let manualNeeded = !p.connectWebhook;
+    await updateWorkspace(w.id, { wa_pending_secret_enc: encrypt(secret) }); // Meta checks the address right away
+    if (p.connectWebhook) {
+      try {
+        await p.connectWebhook(v, url, secret);
+      } catch (e: any) {
+        if (!p.manualWebhook) throw e;
+        manualNeeded = true; // we show the address to paste instead
+      }
+    }
+    await switchOffOtherWhatsApp(w, p.id);
+    await saveValues(w, p.id, v);
+    await updateWorkspace(w.id, { wa_provider: p.id, wa_hook_secret_enc: encrypt(secret), wa_pending_secret_enc: null, wa_display: display, whatsapp_enabled: 1, wa_hook_at: null });
+    await logActivity(w.id, "setup", "whatsapp", `Connected ${p.name}${display ? ` (${display})` : ""}`);
+    res.redirect(withMsg(manualNeeded ? `${back}#webhook` : back, "ok", manualNeeded
+      ? `${p.name} details work. One step left: add the webhook in ${p.name} (below).`
+      : `WhatsApp is live${display ? ` on ${display}` : ""} through ${p.name}. Send it a message from your phone to test.`));
+  } catch (e: any) {
+    res.redirect(withMsg(back, "err", e.message));
+  }
+});
+
+/** One provider answers at a time: remove the previous provider's webhook so customers never get two replies. */
+async function switchOffOtherWhatsApp(w: Workspace, keep: string) {
+  if (keep !== "kapso" && w.kapso_webhook_id && w.kapso_phone_number_id) {
+    const k = decrypt(w.kapso_key_enc);
+    if (k) await deleteWebhook(k, w.kapso_phone_number_id, w.kapso_webhook_id).catch(() => undefined);
+    await updateWorkspace(w.id, { kapso_webhook_id: null, kapso_webhook_secret_enc: null });
+  }
+  const prev = w.wa_provider && w.wa_provider !== keep ? waProvider(w.wa_provider) : null;
+  if (prev?.disconnectWebhook) {
+    const pv = await savedValues(w, prev.id);
+    if (pv) await prev.disconnectWebhook(pv, "").catch(() => undefined);
+  }
+}
 
 setupRoutes.post("/setup/whatsapp", requireLogin, checkCsrf, async (req, res) => {
   const w = await ws(req);
@@ -896,7 +1029,10 @@ setupRoutes.post("/setup/whatsapp", requireLogin, checkCsrf, async (req, res) =>
       const stale = await listOurWebhooks(key, phoneId, `${base}/webhooks/kapso/`).catch(() => []);
       for (const h of stale) if (h.id !== hook.id) await deleteWebhook(key, phoneId, h.id).catch(() => undefined);
     }
+    await switchOffOtherWhatsApp(w, "kapso");
     await updateWorkspace(w.id, {
+      wa_provider: "kapso",
+      wa_hook_at: w.wa_provider === "kapso" || !w.wa_provider ? w.wa_hook_at : null,
       kapso_key_enc: encrypt(key),
       kapso_phone_number_id: phoneId,
       kapso_display_number: display,
@@ -922,6 +1058,11 @@ setupRoutes.post("/setup/whatsapp/disable", requireLogin, checkCsrf, async (req,
   const w = await ws(req);
   const key = decrypt(w.kapso_key_enc);
   if (key && w.kapso_phone_number_id && w.kapso_webhook_id) await deleteWebhook(key, w.kapso_phone_number_id, w.kapso_webhook_id).catch(() => undefined);
+  const other = w.wa_provider && w.wa_provider !== "kapso" ? waProvider(w.wa_provider) : null;
+  if (other?.disconnectWebhook) {
+    const v = await savedValues(w, other.id);
+    if (v) await other.disconnectWebhook(v, "").catch(() => undefined);
+  }
   await updateWorkspace(w.id, { whatsapp_enabled: 0, kapso_webhook_id: null, kapso_webhook_secret_enc: null });
   res.redirect(withMsg("/setup/whatsapp", "ok", "WhatsApp paused."));
 });

@@ -176,8 +176,97 @@ function fakeAI(p, rest, req, j, send) {
   return send(404, { error: { message: "no route" } });
 }
 
+
+// ---- Fake WhatsApp providers (Phase 2). Mounted at /wa/<provider>/…; every send is logged as { wa, to, text }.
+const WA_KEYS = { meta: "Bearer meta-good-token", d360: "d360-good", gupshup: "gs-good", wati: "Bearer wati-good", gallabox: "gb-key|gb-secret" };
+const TW_AUTH = "Basic " + Buffer.from("AC" + "a".repeat(32) + ":" + "b".repeat(32)).toString("base64");
+const EX_AUTH = "Basic " + Buffer.from("exkey:extoken").toString("base64");
+async function fakeWa(p, rest, req, raw, res) {
+  const json = (code, obj) => { res.statusCode = code; res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(obj)); };
+  const bytes = (hex, type = "image/png") => { res.setHeader("Content-Type", type); res.end(Buffer.from(hex, "hex")); };
+  const url = new URL(rest, "http://x");
+  const path = url.pathname;
+  let j = {}; try { j = raw ? JSON.parse(raw) : {}; } catch { j = Object.fromEntries(new URLSearchParams(raw)); }
+  const sent = (to, text) => { log({ wa: p, to: String(to).replace(/[^\d]/g, "") || to, text }); };
+  const h = req.headers;
+  if (p === "meta") {
+    if (h.authorization !== WA_KEYS.meta) return json(401, { error: { message: "Invalid OAuth access token" } });
+    let m;
+    if ((m = path.match(/^\/v[\d.]+\/(\d+)\/messages$/))) { if (j.status === "read") { log({ wa: p, read: j.message_id }); return json(200, { success: true }); } sent(j.to ?? j.recipient, j.text?.body); return json(200, { messages: [{ id: "wamid.out" }] }); }
+    if ((m = path.match(/^\/v[\d.]+\/(\d+)\/subscribed_apps$/))) return json(200, { success: true });
+    if ((m = path.match(/^\/v[\d.]+\/(\d+)$/)) && req.method === "GET" && m[1].startsWith("media")) return json(200, {});
+    if ((m = path.match(/^\/v[\d.]+\/(\d{6,})$/))) {
+      if (req.method === "GET") return m[1] === "106540352242922" ? json(200, { display_phone_number: "+91 98000 11111", verified_name: "Glow" }) : json(404, { error: { message: "Unsupported get request" } });
+      const cb = j.webhook_configuration?.override_callback_uri;
+      log({ wa: p, webhook: cb ?? null });
+      if (cb) { // Meta checks the address before accepting it
+        const r = await fetch(`${cb}?hub.mode=subscribe&hub.challenge=ch4ll&hub.verify_token=${encodeURIComponent(j.webhook_configuration.verify_token)}`);
+        if ((await r.text()) !== "ch4ll") return json(400, { error: { message: "Callback verification failed" } });
+      }
+      return json(200, { success: true });
+    }
+    if ((m = path.match(/^\/v[\d.]+\/(med_[0-9a-f]+)$/))) return json(200, { url: `http://localhost:4100/wa/meta/cdn/${m[1].slice(4)}`, mime_type: "image/png" });
+    if ((m = path.match(/^\/cdn\/([0-9a-f]+)$/))) { log({ wa: p, download: m[1] }); return bytes(m[1]); }
+  }
+  if (p === "d360") {
+    if (h["d360-api-key"] !== WA_KEYS.d360) return json(401, { error: "Invalid api key" });
+    let m;
+    if (path === "/health_status") return json(200, { display_phone_number: "+91 98000 22222", health_status: { can_send_message: "AVAILABLE" } });
+    if (path === "/v1/configs/webhook") { log({ wa: p, webhook: j.url, headers: j.headers }); return json(201, { url: j.url }); }
+    if (path === "/messages") { if (j.status === "read") return json(200, { success: true }); sent(j.to, j.text?.body); return json(200, { messages: [{ id: "wamid.x" }] }); }
+    if (path === "/whatsapp_business/attachments/") { log({ wa: p, download: url.searchParams.get("mid") }); return bytes(url.searchParams.get("mid")); }
+    if ((m = path.match(/^\/(med_[0-9a-f]+)$/))) return json(200, { url: `https://lookaside.fbsbx.com/whatsapp_business/attachments/?mid=${m[1].slice(4)}&ext=1`, mime_type: "image/png" });
+  }
+  if (p === "twilio") {
+    if (h.authorization !== TW_AUTH) return json(401, { message: "Authenticate" });
+    let m;
+    if (/^\/2010-04-01\/Accounts\/AC\w+\.json$/.test(path)) return json(200, { sid: "AC", status: "active" });
+    if (path === "/v2/Channels/Senders") return json(200, { senders: [{ sid: "XE" + "1".repeat(32), sender_id: "whatsapp:+919800033333", status: "ONLINE" }] });
+    if ((m = path.match(/^\/v2\/Channels\/Senders\/(XE\w+)$/))) { log({ wa: p, webhook: j.webhook?.callback_url }); return json(200, { sid: m[1] }); }
+    if (/\/Messages\.json$/.test(path)) { sent(j.To, j.Body); if (j.From !== "whatsapp:+919800033333") return json(400, { message: "bad From" }); return json(201, { sid: "SM1" }); }
+    if ((m = path.match(/^\/media\/([0-9a-f]+)$/))) { log({ wa: p, download: m[1] }); return bytes(m[1], "image/jpeg"); }
+  }
+  if (p === "gupshup") {
+    if (h.apikey !== WA_KEYS.gupshup) return json(401, { status: "error", message: "Authentication Failed" });
+    if (/^\/wa\/app\/[\w-]+\/template$/.test(path)) return json(200, { status: "success", templates: [] });
+    if (/^\/wa\/app\/[\w-]+\/subscription$/.test(path)) { log({ wa: p, webhook: j.url }); return json(200, { status: "success" }); }
+    if (path === "/wa/api/v1/msg") { const msg = JSON.parse(j.message); sent(j.destination, msg.text); if (j["src.name"] !== "GlowBot") return json(400, { status: "error", message: "bad app" }); return json(200, { status: "submitted", messageId: "g1" }); }
+    let m; if ((m = path.match(/^\/media\/([0-9a-f]+)$/))) { log({ wa: p, download: m[1] }); return bytes(m[1]); }
+  }
+  if (p === "wati") {
+    let m;
+    if ((m = path.match(/^\/media-public\/([0-9a-f]+)$/))) return bytes(m[1]);
+    if (h.authorization !== WA_KEYS.wati) return json(401, { message: "Unauthorized" });
+    if (path === "/12345/api/v1/whatsApp/phoneNumbers") return json(200, { result: [{ displayPhoneNumber: "+91 98000 44444" }] });
+    if (path === "/12345/api/v2/webhookEndpoints") { log({ wa: p, webhook: j[0]?.url }); return json(200, { result: true }); }
+    if ((m = path.match(/^\/12345\/api\/v1\/sendSessionMessage\/(\d+)$/))) { sent(m[1], url.searchParams.get("messageText")); return json(200, { ok: true, result: "success" }); }
+    if (path === "/12345/api/v1/getMedia") { const f = url.searchParams.get("fileName"); log({ wa: p, download: f }); return bytes(f.match(/([0-9a-f]+)\.jpg$/)[1], "image/jpeg"); }
+  }
+  if (p === "gallabox") {
+    let m;
+    if ((m = path.match(/^\/media\/([0-9a-f]+)$/))) { log({ wa: p, download: m[1] }); return bytes(m[1]); }
+    if (`${h.apikey}|${h.apisecret}` !== WA_KEYS.gallabox) return json(401, { message: "Unauthorized" });
+    if (path === "/devapi/test") return json(200, { ok: true });
+    if (path === "/devapi/messages/whatsapp") { sent(j.recipient?.phone, j.whatsapp?.text?.body); return json(202, { status: "ACCEPTED" }); }
+  }
+  if (p === "exotel") {
+    let m;
+    if ((m = path.match(/^\/media\/([0-9a-f]+)$/))) { log({ wa: p, download: m[1] }); return bytes(m[1]); }
+    if (h.authorization !== EX_AUTH) return json(401, { RestException: { Message: "Authentication failed" } });
+    if (/^\/v1\/Accounts\/\w+\/Balance\.json$/.test(path)) return json(200, { Account: { AccountSid: "glow1" } });
+    if (/^\/v2\/accounts\/\w+\/messages$/.test(path)) { const msg = j.whatsapp.messages[0]; sent(msg.to, msg.content.text.body); return json(202, { response: { whatsapp: { messages: [{ status: "success", data: { sid: "ex1" } }] } } }); }
+  }
+  json(404, { error: { message: `fake ${p}: no route ${req.method} ${path}` } });
+}
+
 const r2 = new Map(); // fake Cloudflare R2 (S3 API): /r2/<bucket>/<key>
 http.createServer((req, res) => {
+  let wam;
+  if ((wam = req.url.match(/^\/wa\/(meta|d360|twilio|gupshup|wati|gallabox|exotel)(\/.*)$/))) {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    return req.on("end", () => fakeWa(wam[1], wam[2], req, Buffer.concat(chunks).toString("utf8"), res).catch((e) => { res.statusCode = 500; res.end(String(e)); }));
+  }
   if (req.url.startsWith("/r2/")) {
     const chunks = [];
     req.on("data", (c) => chunks.push(c));

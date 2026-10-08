@@ -25,14 +25,23 @@ function dbFor(env: Env) {
 }
 
 // Per-business webhook secrets, cached for a minute per worker instance (saves a database read per message).
-type Secrets = { id: number; kapso: string | null; razorpay: string | null };
+type Secrets = { id: number; kapso: string | null; razorpay: string | null; waProvider: string | null; wa: string | null; waPending: string | null };
 const cache = new Map<string, { at: number; v: Secrets | null }>();
 async function secretsFor(env: Env, publicId: string): Promise<Secrets | null> {
   const hit = cache.get(publicId);
   if (hit && Date.now() - hit.at < 60_000) return hit.v;
-  const rs = await dbFor(env).execute({ sql: "SELECT id, kapso_webhook_secret_enc, razorpay_webhook_secret_enc FROM workspaces WHERE public_id = ?", args: [publicId] });
+  const rs = await dbFor(env).execute({ sql: "SELECT id, kapso_webhook_secret_enc, razorpay_webhook_secret_enc, wa_provider, wa_hook_secret_enc, wa_pending_secret_enc FROM workspaces WHERE public_id = ?", args: [publicId] });
   const row = rs.rows[0] as any;
-  const v = row ? { id: Number(row.id), kapso: await decryptSecret(env.APP_SECRET, row.kapso_webhook_secret_enc), razorpay: await decryptSecret(env.APP_SECRET, row.razorpay_webhook_secret_enc) } : null;
+  const v = row
+    ? {
+        id: Number(row.id),
+        kapso: await decryptSecret(env.APP_SECRET, row.kapso_webhook_secret_enc),
+        razorpay: await decryptSecret(env.APP_SECRET, row.razorpay_webhook_secret_enc),
+        waProvider: row.wa_provider ? String(row.wa_provider) : null,
+        wa: await decryptSecret(env.APP_SECRET, row.wa_hook_secret_enc),
+        waPending: await decryptSecret(env.APP_SECRET, row.wa_pending_secret_enc),
+      }
+    : null;
   if (cache.size > 2000) cache.clear();
   cache.set(publicId, { at: Date.now(), v });
   return v;
@@ -65,12 +74,15 @@ function forward(env: Env, req: Request, raw: ArrayBuffer) {
   const url = new URL(req.url);
   const headers = new Headers(req.headers);
   headers.set("X-Booking-Edge", "1");
-  return fetch(env.APP_URL.replace(/\/+$/, "") + url.pathname + url.search, { method: req.method, headers, body: raw });
+  const hasBody = req.method !== "GET" && req.method !== "HEAD";
+  return fetch(env.APP_URL.replace(/\/+$/, "") + url.pathname + url.search, { method: req.method, headers, body: hasBody ? raw : undefined });
 }
 
 async function handle(req: Request, env: Env, ctx: Ctx): Promise<Response> {
   const url = new URL(req.url);
   if (req.method === "GET" && url.pathname === "/healthz") return new Response("ok");
+  const wa = url.pathname.match(/^\/webhooks\/wa\/([a-z0-9]{2,20})\/([A-Za-z0-9_-]{4,64})\/([A-Za-z0-9]{16,64})$/);
+  if (wa) return handleWa(req, env, ctx, wa[1]!, wa[2]!, wa[3]!);
   const m = url.pathname.match(/^\/webhooks\/(kapso|razorpay)\/([A-Za-z0-9_-]{4,64})$/);
   if (req.method !== "POST" || !m) return new Response("Not found", { status: 404 });
   const [, provider, publicId] = m;
@@ -96,6 +108,45 @@ async function handle(req: Request, env: Env, ctx: Ctx): Promise<Response> {
   }
   ctx.waitUntil(wake(env, "/internal/drain"));
   return new Response("ok");
+}
+
+/** Headers kept with a raw WhatsApp webhook (same list as the app's pickHeaders). */
+const WA_HEADERS = ["x-hub-signature-256", "x-twilio-signature", "x-gallabox-signature", "x-event-name", "content-type"];
+const TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response/>';
+
+/**
+ * Other WhatsApp providers: /webhooks/wa/<provider>/<business>/<secret>. The secret in the path is checked here;
+ * provider signatures (Meta, Twilio, Gallabox) are checked by the app when it processes the event.
+ */
+async function handleWa(req: Request, env: Env, ctx: Ctx, provider: string, publicId: string, secret: string): Promise<Response> {
+  const raw = req.method === "POST" ? await req.arrayBuffer() : new ArrayBuffer(0);
+  if (raw.byteLength > 3 * 1024 * 1024) return new Response("Too large", { status: 413 });
+  try {
+    const url = new URL(req.url);
+    if (req.method === "GET") {
+      // A new address is checked before it's saved, so read fresh (no cache) and accept the pending secret too.
+      cache.delete(publicId);
+      const g = await secretsFor(env, publicId);
+      const ok = !!g && ((g.waProvider === provider && !!g.wa && safeEqual(g.wa, secret)) || (!!g.waPending && safeEqual(g.waPending, secret)));
+      if (!ok) return new Response("Not found", { status: 404 });
+      // Meta's address check: echo the challenge when the verify token is our secret.
+      if (url.searchParams.get("hub.mode") === "subscribe" && url.searchParams.get("hub.verify_token") === secret) return new Response(url.searchParams.get("hub.challenge") ?? "");
+      return new Response("ok");
+    }
+    if (req.method !== "POST") return new Response("Not found", { status: 404 });
+    let s = await secretsFor(env, publicId);
+    // Just connected (cached secrets are up to a minute old): look again before refusing.
+    if (s && !(s.waProvider === provider && s.wa && safeEqual(s.wa, secret))) { cache.delete(publicId); s = await secretsFor(env, publicId); }
+    if (!s || s.waProvider !== provider || !s.wa || !safeEqual(s.wa, secret)) return new Response("Not found", { status: 404 });
+    const headers: Record<string, string> = { provider, url: req.url };
+    for (const k of WA_HEADERS) { const v = req.headers.get(k); if (v) headers[k] = v; }
+    await save(env, s.id, "wh:wa", await sha256Hex(new Uint8Array(raw)), headers, new TextDecoder().decode(raw));
+  } catch (e) {
+    console.error("edge: database problem, passing to the app", (e as Error)?.message);
+    return forward(env, req, raw);
+  }
+  ctx.waitUntil(wake(env, "/internal/drain"));
+  return provider === "twilio" ? new Response(TWIML, { headers: { "Content-Type": "text/xml" } }) : new Response("ok");
 }
 
 /** Minute timer: one indexed query each for due jobs and stuck events; wake the app only if needed. */

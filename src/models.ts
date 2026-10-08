@@ -158,7 +158,7 @@ const WS_COLUMNS = new Set([
   "kapso_phone_number_id", "kapso_display_number", "kapso_webhook_id", "kapso_webhook_secret_enc", "whatsapp_enabled", "shared_key_id",
   "business_type", "contact_email", "contact_phone", "address", "maps_url", "website", "socials", "meeting_link", "services_migrated",
   "online_discount_pct", "pay_at_venue", "razorpay_key_id", "razorpay_secret_enc", "razorpay_webhook_secret_enc", "upi_id", "upi_name", "upi_auto_confirm",
-  "owner_phones", "google_refresh_enc", "google_account_email", "rzp_hook_url", "rzp_hook_at", "rzp_hook_via",
+  "owner_phones", "google_refresh_enc", "google_account_email", "rzp_hook_url", "rzp_hook_at", "rzp_hook_via", "wa_provider", "wa_hook_secret_enc", "wa_display", "wa_hook_at", "wa_pending_secret_enc",
 ]);
 
 export async function updateWorkspace(id: number, fields: Partial<Workspace>) {

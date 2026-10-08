@@ -493,6 +493,11 @@ const MIGRATIONS: [string, string, string][] = [
   ["workspaces", "razorpay_key_id", "TEXT NOT NULL DEFAULT ''"],
   ["workspaces", "razorpay_secret_enc", "TEXT"],
   ["workspaces", "razorpay_webhook_secret_enc", "TEXT"],
+  ["workspaces", "wa_provider", "TEXT"], // null = Kapso (older accounts)
+  ["workspaces", "wa_hook_secret_enc", "TEXT"], // secret in the webhook path for non-Kapso providers
+  ["workspaces", "wa_display", "TEXT"],
+  ["workspaces", "wa_pending_secret_enc", "TEXT"], // secret being set up (Meta checks the address before saving it)
+  ["workspaces", "wa_hook_at", "INTEGER"], // last customer message received (ms)
   ["workspaces", "rzp_hook_url", "TEXT"], // webhook address the business set in Razorpay (as far as we know)
   ["workspaces", "rzp_hook_at", "INTEGER"], // last signed Razorpay webhook received (ms)
   ["workspaces", "rzp_hook_via", "TEXT"], // 'edge' or 'app': which address it arrived on
@@ -605,6 +610,11 @@ export interface Workspace {
   razorpay_secret_enc: string | null;
   razorpay_webhook_secret_enc: string | null;
   rzp_hook_url: string | null;
+  wa_provider: string | null;
+  wa_hook_secret_enc: string | null;
+  wa_display: string | null;
+  wa_pending_secret_enc: string | null;
+  wa_hook_at: number | null;
   rzp_hook_at: number | null;
   rzp_hook_via: string | null;
   upi_id: string;

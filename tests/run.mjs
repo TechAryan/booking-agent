@@ -11,7 +11,10 @@ const env = {
   KAPSO_API_BASE: "http://localhost:4100", FAKE_GOOGLE_CALENDAR: "1", NODE_ENV: "test",
   RAZORPAY_API_BASE: "http://localhost:4100",
   AI_BASE_OPENAI: "http://localhost:4100/ai/openai", AI_BASE_GEMINI: "http://localhost:4100/ai/gemini", AI_BASE_DEEPSEEK: "http://localhost:4100/ai/deepseek",
-  AI_BASE_SARVAM: "http://localhost:4100/ai/sarvam", AI_BASE_OPENROUTER: "http://localhost:4100/ai/openrouter", ALLOW_PRIVATE_FETCH: "1", PAYMENT_SWEEP_MS: "1500", TEST_CHAT_LIMIT: "2000", AI_TEST_LIMIT: "100",
+  AI_BASE_SARVAM: "http://localhost:4100/ai/sarvam", AI_BASE_OPENROUTER: "http://localhost:4100/ai/openrouter",
+  WA_BASE_META: "http://localhost:4100/wa/meta", WA_BASE_D360: "http://localhost:4100/wa/d360", WA_BASE_TWILIO: "http://localhost:4100/wa/twilio",
+  WA_BASE_TWILIO_MSG: "http://localhost:4100/wa/twilio", WA_BASE_GUPSHUP: "http://localhost:4100/wa/gupshup", WA_BASE_GALLABOX: "http://localhost:4100/wa/gallabox",
+  WA_BASE_EXOTEL: "http://localhost:4100/wa/exotel", ALLOW_PRIVATE_FETCH: "1", PAYMENT_SWEEP_MS: "1500", TEST_CHAT_LIMIT: "2000", AI_TEST_LIMIT: "100",
 };
 // Unit checks first (inbox, jobs, transactions, double-booking guard), on their own database.
 {
@@ -43,7 +46,7 @@ for (let i = 0; i < 40; i++) {
   await new Promise((r) => setTimeout(r, 500));
 }
 // TEST_UI=1 runs the browser test (tests/ui.mjs) instead of the API test.
-const files = process.env.TEST_UI ? ["tests/ui.mjs"] : ["tests/e2e.mjs", "tests/e2e-v7.mjs", "tests/e2e-ai.mjs", ...(process.env.TEST_DB === "turso" ? ["tests/edge.ts"] : [])];
+const files = process.env.TEST_UI ? ["tests/ui.mjs"] : ["tests/e2e.mjs", "tests/e2e-v7.mjs", "tests/e2e-ai.mjs", ...(process.env.TEST_DB === "turso" ? ["tests/edge.ts"] : []), "tests/e2e-wa.mjs", ...(process.env.TEST_DB === "turso" ? ["tests/edge-wa.ts"] : [])];
 let failed = 0;
 for (const f of files) {
   const args = f.endsWith(".ts") ? ["node_modules/tsx/dist/cli.mjs", "--disable-warning=ExperimentalWarning", f] : [f];

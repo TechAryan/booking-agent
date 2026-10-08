@@ -284,6 +284,13 @@ await page.click("text=Pause WhatsApp >> nth=-1");
 await page.waitForSelector(".sheet .destructive");
 await Promise.all([page.waitForNavigation(), page.click(".sheet [data-yes]")]);
 ok((await toastText()).includes("WhatsApp paused"), "pause WhatsApp via confirm sheet");
+await page.goto(`${BASE}/setup/whatsapp?p=meta`);
+ok(await page.$eval("details.ai-others", (d) => d.open) && (await page.textContent("#connect h2")).includes("Meta direct"), "other WhatsApp provider opens with its guide");
+await page.setViewportSize({ width: 390, height: 844 });
+await page.reload();
+ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)), "WhatsApp provider page fits a phone screen");
+await shot("10b-whatsapp-meta-mobile");
+await page.setViewportSize({ width: 1200, height: 900 });
 
 // ---------- v7 pages ----------
 await page.goto(`${BASE}/setup/profile`);
