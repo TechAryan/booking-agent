@@ -11,7 +11,7 @@ import {
 import { calendarApi, HOLIDAY_CALENDARS, publicHolidays } from "../calendar.js";
 import { book, Booking, forwardUrl, BookingFilter, cancelBooking, checkPayment, confirmManualPayment, getBooking, isPaidLocked, listBookings, payPageUrl, reschedule, notifyCustomer, whenText } from "../bookings.js";
 import { WorkspaceCalendar } from "../calendar.js";
-import { razorpayReady, upiReady, verifyRazorpay } from "../payments.js";
+import { razorpayHookMoved, razorpayHookUrl, razorpayReady, upiReady, verifyRazorpay } from "../payments.js";
 import { crawlSite, socialPreview, summarizeBusiness } from "../importer.js";
 import { getWorkspaceForUser, updateWorkspace } from "../models.js";
 import { decrypt, encrypt, mask, randomToken, rateLimited } from "../security.js";
@@ -348,6 +348,15 @@ extraRoutes.post("/setup/holidays/:id/delete", requireLogin, checkCsrf, async (r
 
 // ============================================================ Payments
 
+/** "5 min ago" for a millisecond timestamp. */
+function agoMs(ms: number) {
+  const mins = Math.max(0, Math.round((Date.now() - ms) / 60_000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  if (mins < 1440) return `${Math.round(mins / 60)} h ago`;
+  return `${Math.round(mins / 1440)} days ago`;
+}
+
 extraRoutes.get("/setup/payments", requireLogin, async (req, res) => {
   const w = await ws(req);
   const services = await listServices(w);
@@ -356,7 +365,15 @@ extraRoutes.get("/setup/payments", requireLogin, async (req, res) => {
   const q = example ? await quote(w, example) : null;
   const rzSecret = decrypt(w.razorpay_secret_enc);
   const hookSecret = decrypt(w.razorpay_webhook_secret_enc);
-  const hookUrl = `${env.webhookBase || env.publicUrl}/webhooks/razorpay/${w.public_id}`;
+  const hookUrl = razorpayHookUrl(w);
+  const moved = razorpayHookMoved(w);
+  const hookOk = !!w.rzp_hook_at && !moved;
+  const steps = html`<ol class="guide">
+                <li>Razorpay Dashboard → <b>Account & Settings → Webhooks → + Add New Webhook</b>.</li>
+                <li>Webhook URL: <span class="mono" style="user-select:all">${hookUrl}</span> <button type="button" class="secondary small" data-copy="${hookUrl}">Copy</button></li>
+                <li>Secret: <span class="mono" style="user-select:all">${hookSecret ?? ""}</span> <button type="button" class="secondary small" data-copy="${hookSecret ?? ""}">Copy</button></li>
+                <li>Tick events <b>payment_link.paid</b>, <b>payment_link.expired</b> and <b>payment_link.cancelled</b>, then <b>Create Webhook</b>.</li>
+              </ol>`;
   res.send(
     page(req, {
       title: "Payments",
@@ -385,13 +402,23 @@ extraRoutes.get("/setup/payments", requireLogin, async (req, res) => {
           <p class="muted">Customers get a secure payment link (UPI, cards, netbanking, wallets). The booking confirms by itself the moment they pay, and money goes straight to your Razorpay account.</p>
           ${razorpayReady(w)
             ? html`<div class="done-line">${tile("check")}<span>Connected: <span class="mono">${w.razorpay_key_id}</span> ${w.razorpay_key_id.startsWith("rzp_test_") ? html`<span class="tag warn">Test mode: no real money</span>` : html`<span class="tag">Live</span>`}</span></div>
-              <h3>Last step: add the webhook in Razorpay</h3>
-              <ol class="guide">
-                <li>Razorpay Dashboard → <b>Account & Settings → Webhooks → + Add New Webhook</b>.</li>
-                <li>Webhook URL: <span class="mono" style="user-select:all">${hookUrl}</span> <button type="button" class="secondary small" data-copy="${hookUrl}">Copy</button></li>
-                <li>Secret: <span class="mono" style="user-select:all">${hookSecret ?? ""}</span> <button type="button" class="secondary small" data-copy="${hookSecret ?? ""}">Copy</button></li>
-                <li>Tick events <b>payment_link.paid</b>, <b>payment_link.expired</b> and <b>payment_link.cancelled</b>, then <b>Create Webhook</b>.</li>
-              </ol>
+              ${moved
+                ? html`<div class="hook-moved" id="webhook">
+                    <b>${icon("bell", 15)} Update your webhook address in Razorpay</b>
+                    <p>Our webhook address changed. Payments still confirm within a minute, but not instantly until you update it.</p>
+                    <ol class="guide plain">
+                      <li>Razorpay Dashboard → <b>Account & Settings → Webhooks</b> → click your webhook → <b>Edit</b>.</li>
+                      <li>Replace the URL with: <span class="mono" style="user-select:all">${hookUrl}</span> <button type="button" class="secondary small" data-copy="${hookUrl}">Copy</button></li>
+                      <li>Keep the secret and events as they are, and <b>Save</b>.</li>
+                    </ol>
+                    <form method="post" action="/setup/payments/razorpay/hook-updated" class="row">${csrfField(req)}<button class="small">I've updated it</button></form>
+                  </div>`
+                : hookOk
+                  ? html`<p class="hook-status ok" id="webhook">${icon("check", 14)} <b>Webhook working</b> · last update ${agoMs(w.rzp_hook_at!)}</p>
+                      <details class="hint-box"><summary>Webhook settings (to set it up again)</summary>${steps}</details>`
+                  : html`<h3 id="webhook">Last step: add the webhook in Razorpay</h3>
+                      ${steps}
+                      <p class="hook-status wait">${icon("clock", 14)} <b>Not received yet.</b> This turns green after your first payment (a test payment in test mode works).</p>`}
               <p class="hint">Even without the webhook we check every minute, and again when a customer says they've paid. The webhook just makes it instant.</p>
               <form method="post" action="/setup/payments/razorpay/disconnect" class="row" data-confirm="Disconnect Razorpay?" data-confirm-detail="New bookings can't be paid online by link. Existing payment links stop being confirmed automatically." data-confirm-ok="Disconnect">
                 ${csrfField(req)}<button class="secondary small">Disconnect</button>
@@ -446,11 +473,18 @@ extraRoutes.post("/setup/payments/razorpay", requireLogin, checkCsrf, async (req
   if (rateLimited(`rzp:${w.id}`, 10, 10 * 60_000)) return res.redirect(withMsg(back, "err", "Too many tries. Wait a few minutes."));
   try {
     const r = await verifyRazorpay(keyId, secret);
-    await updateWorkspace(w.id, { razorpay_key_id: keyId, razorpay_secret_enc: encrypt(secret), razorpay_webhook_secret_enc: w.razorpay_webhook_secret_enc || encrypt(randomToken(18)) });
+    await updateWorkspace(w.id, { razorpay_key_id: keyId, razorpay_secret_enc: encrypt(secret), razorpay_webhook_secret_enc: w.razorpay_webhook_secret_enc || encrypt(randomToken(18)), rzp_hook_url: razorpayHookUrl(w) });
     res.redirect(withMsg(back, "ok", r.mode === "test" ? "Razorpay connected in TEST mode. Switch to live keys before real customers pay." : "Razorpay connected. Add the webhook below."));
   } catch (e: any) {
     res.redirect(withMsg(back, "err", e.message));
   }
+});
+
+extraRoutes.post("/setup/payments/razorpay/hook-updated", requireLogin, checkCsrf, async (req, res) => {
+  const w = await ws(req);
+  // Trust them for now; the next event shows which address Razorpay really uses (and the banner returns if it's still the old one).
+  await updateWorkspace(w.id, { rzp_hook_url: razorpayHookUrl(w), rzp_hook_via: null });
+  res.redirect(withMsg("/setup/payments#webhook", "ok", "Thanks. It turns green when the next payment update arrives at the new address."));
 });
 
 extraRoutes.post("/setup/payments/razorpay/disconnect", requireLogin, checkCsrf, async (req, res) => {

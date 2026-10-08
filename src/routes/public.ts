@@ -247,7 +247,9 @@ publicRoutes.post("/webhooks/razorpay/:id", express.raw({ type: "*/*", limit: "1
   if (!secret || !verifyWebhookSignature(secret, raw, String(req.header("X-Razorpay-Signature") || ""))) return res.sendStatus(401);
   // Razorpay retries and may send an event twice: the event id (or the body hash) dedupes it.
   const eventId = String(req.header("X-Razorpay-Event-Id") || "") || sha(raw);
-  await saveEvent(ws.id, "wh:razorpay", eventId, "", rawEvent({}, raw.toString("utf8")));
+  // Arrived here directly, unless the edge worker passed it on (it does that only when the database is down).
+  const via = req.header("X-Booking-Edge") === "1" ? "edge" : "app";
+  await saveEvent(ws.id, "wh:razorpay", eventId, "", rawEvent({ via }, raw.toString("utf8")));
   res.sendStatus(200);
   kickDrain();
 });
@@ -256,8 +258,10 @@ onInbox("wh:razorpay", async (rows) => {
   for (const row of rows) {
     const ws = await getWorkspaceById(row.workspace_id);
     if (!ws) continue;
-    let ev: any;
-    try { ev = JSON.parse(JSON.parse(row.body).body); } catch { continue; }
+    let ev: any, via = "";
+    try { const outer = JSON.parse(row.body); via = outer.headers?.via || "edge"; ev = JSON.parse(outer.body); } catch { continue; } // app rows always say; older edge builds didn't
+    // A signed event arrived: the webhook works. Remember where it came in, for the "address changed" check.
+    if (via === "edge" || via === "app") await db.run("UPDATE workspaces SET rzp_hook_at=?, rzp_hook_via=? WHERE id=?", row.created_at, via, ws.id);
     const link = ev?.payload?.payment_link?.entity;
     if (!link) continue;
     const b = (await getBooking(ws, link.reference_id)) ?? (await db.get<Booking>("SELECT * FROM bookings WHERE workspace_id=? AND payment_link_id=?", ws.id, link.id));

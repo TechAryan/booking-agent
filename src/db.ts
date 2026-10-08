@@ -493,6 +493,9 @@ const MIGRATIONS: [string, string, string][] = [
   ["workspaces", "razorpay_key_id", "TEXT NOT NULL DEFAULT ''"],
   ["workspaces", "razorpay_secret_enc", "TEXT"],
   ["workspaces", "razorpay_webhook_secret_enc", "TEXT"],
+  ["workspaces", "rzp_hook_url", "TEXT"], // webhook address the business set in Razorpay (as far as we know)
+  ["workspaces", "rzp_hook_at", "INTEGER"], // last signed Razorpay webhook received (ms)
+  ["workspaces", "rzp_hook_via", "TEXT"], // 'edge' or 'app': which address it arrived on
   ["workspaces", "upi_id", "TEXT NOT NULL DEFAULT ''"],
   ["workspaces", "upi_name", "TEXT NOT NULL DEFAULT ''"],
   ["workspaces", "upi_auto_confirm", "INTEGER NOT NULL DEFAULT 0"], // confirm UPI bookings when the screenshot checks out
@@ -601,6 +604,9 @@ export interface Workspace {
   razorpay_key_id: string;
   razorpay_secret_enc: string | null;
   razorpay_webhook_secret_enc: string | null;
+  rzp_hook_url: string | null;
+  rzp_hook_at: number | null;
+  rzp_hook_via: string | null;
   upi_id: string;
   upi_name: string;
   upi_auto_confirm: number;

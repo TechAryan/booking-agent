@@ -63,7 +63,9 @@ export async function wake(env: Env, path: "/internal/drain" | "/internal/tick")
 /** Passes the original request to the app unchanged (used when our database is unreachable). */
 function forward(env: Env, req: Request, raw: ArrayBuffer) {
   const url = new URL(req.url);
-  return fetch(env.APP_URL.replace(/\/+$/, "") + url.pathname + url.search, { method: req.method, headers: req.headers, body: raw });
+  const headers = new Headers(req.headers);
+  headers.set("X-Booking-Edge", "1");
+  return fetch(env.APP_URL.replace(/\/+$/, "") + url.pathname + url.search, { method: req.method, headers, body: raw });
 }
 
 async function handle(req: Request, env: Env, ctx: Ctx): Promise<Response> {
@@ -86,7 +88,7 @@ async function handle(req: Request, env: Env, ctx: Ctx): Promise<Response> {
       const sig = req.headers.get("X-Razorpay-Signature") || "";
       if (!s.razorpay || !sig || !safeEqual(await hmacHex(s.razorpay, body), sig)) return new Response("Unauthorized", { status: 401 });
       const eventId = req.headers.get("X-Razorpay-Event-Id") || (await sha256Hex(body));
-      await save(env, s.id, "wh:razorpay", eventId, {}, new TextDecoder().decode(body));
+      await save(env, s.id, "wh:razorpay", eventId, { via: "edge" }, new TextDecoder().decode(body));
     }
   } catch (e) {
     console.error("edge: database problem, passing to the app", (e as Error)?.message);

@@ -194,6 +194,7 @@ r = await cu.page("/setup/payments");
 const hookSecret = r.text.match(/Secret: <span class="mono"[^>]*>([^<]+)</)?.[1];
 ok(!!hookSecret && r.text.includes(`/webhooks/razorpay/`), "webhook URL + secret shown");
 const pub = r.text.match(/\/webhooks\/razorpay\/(ws_[A-Za-z0-9_-]+)/)?.[1];
+ok(r.text.includes("Not received yet") && !r.text.includes("Webhook working"), "webhook status: waiting for the first event");
 r = await cu.post("/setup/payments", { pay_at_venue: "1", online_discount_pct: "10" });
 r = await cu.page("/setup/payments");
 ok(r.text.includes("₹800 at the venue") && r.text.includes("₹720 online"), "price preview shows discount");
@@ -254,6 +255,23 @@ chk = await cu.tool("check_payment", { ref: p2.ref });
 ok(chk.status === "paid" && chk.message.includes("confirmed"), "webhook confirmed the booking", JSON.stringify(chk));
 evs = await (await fetch(`${BASE}/__test/google-events`)).json();
 ok(evs.filter((e) => e.priv.bookingRef === p2.ref).length === 1, "duplicate webhook → still one event");
+r = await cu.page("/setup/payments");
+ok(r.text.includes("Webhook working") && r.text.includes("last update just now") && !r.text.includes("Update your webhook address"), "webhook status turns green after a signed event");
+if (process.env.TEST_DB !== "turso") {
+  // Our address changed (e.g. a new domain): the business is told, on the dashboard and the payments page.
+  const { DatabaseSync } = await import("node:sqlite");
+  const sq = new DatabaseSync(process.env.DATABASE_PATH);
+  sq.prepare("UPDATE workspaces SET rzp_hook_url=? WHERE public_id=?").run("https://old.example.com/webhooks/razorpay/" + pub, pub);
+  r = await cu.page("/");
+  ok(r.text.includes("Update your Razorpay webhook") && r.text.includes("/setup/payments#webhook"), "dashboard warns when the webhook address changed");
+  r = await cu.page("/setup/payments");
+  ok(r.text.includes("Update your webhook address in Razorpay") && r.text.includes(`localhost:3300/webhooks/razorpay/${pub}`) && !r.text.includes("Webhook working"), "payments page shows the new address to paste");
+  r = await cu.post("/setup/payments/razorpay/hook-updated", {});
+  ok(dec(r.loc).includes("turns green"), "I've updated it", dec(r.loc));
+  r = await cu.page("/");
+  ok(!r.text.includes("Update your Razorpay webhook"), "warning gone after confirming");
+  sq.close();
+}
 
 // 3) No webhook, no redirect: the poller catches it
 av = await cu.tool("check_availability", { date: pday, service: "Facial" });

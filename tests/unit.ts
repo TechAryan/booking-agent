@@ -6,6 +6,7 @@ import path from "node:path";
 
 if (!process.env.TURSO_DATABASE_URL) process.env.DATABASE_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "unit-")), "u.db");
 process.env.APP_SECRET ||= "unit-secret";
+process.env.WEBHOOK_BASE_URL = "https://edge.example.dev";
 
 const { db, initDb } = await import("../src/db.js");
 const { saveEvent, onInbox, drainInbox } = await import("../src/inbox.js");
@@ -128,6 +129,18 @@ ok(after === "wrote", "the next slot right after is fine");
   const after = await db.get<any>("SELECT image, purged, utr FROM payment_proofs WHERE id=?", id);
   ok(after.image === "" && after.purged === 1 && after.utr === "123412341234", "the photo goes, the payment details stay (duplicate UTR checks still work)");
   ok((await db.get<any>("SELECT purged FROM payment_proofs WHERE id=?", small)).purged === 0, "recent photos are kept");
+}
+
+// ---------- Razorpay webhook address drift ----------
+{
+  const { razorpayHookMoved, razorpayHookUrl } = await import("../src/payments.js");
+  const base: any = { public_id: "ws_x", razorpay_key_id: "rzp_test_1", razorpay_secret_enc: "e", rzp_hook_url: null, rzp_hook_via: null };
+  ok(razorpayHookUrl(base) === "https://edge.example.dev/webhooks/razorpay/ws_x", "webhook address uses the edge worker");
+  ok(!razorpayHookMoved(base), "nothing known yet → no warning");
+  ok(razorpayHookMoved({ ...base, rzp_hook_via: "app" }), "events still arriving on the old direct address → warning");
+  ok(!razorpayHookMoved({ ...base, rzp_hook_via: "edge" }), "events via the edge → fine");
+  ok(razorpayHookMoved({ ...base, rzp_hook_url: "https://old.example/webhooks/razorpay/ws_x" }), "address we showed changed → warning");
+  ok(!razorpayHookMoved({ ...base, razorpay_key_id: "", rzp_hook_via: "app" }), "Razorpay not connected → no warning");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

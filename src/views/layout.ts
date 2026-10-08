@@ -21,7 +21,7 @@ export function page(
 <meta name="theme-color" content="${theme === "light" ? "#f5f5f7" : "#000000"}">
 <title>${opts.title} · ${env.appName}</title>
 ${ICON_LINKS}
-<link rel="stylesheet" href="/static/app.css?v=17">
+<link rel="stylesheet" href="/static/app.css?v=18">
 <script>document.documentElement.classList.add("js")</script>
 </head>
 <body class="${u ? "app" : "auth"}">

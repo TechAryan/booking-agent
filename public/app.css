@@ -981,3 +981,17 @@ details.advanced-card > .card { box-shadow: none; background: var(--fill); margi
 .more-ver button { justify-self: start; }
 @media (max-width: 560px) { .ai-rec { padding: 14px; gap: 12px; } .ver { padding: 11px 12px; } }
 .storage-line.warn { color: var(--orange); font-weight: 600; }
+
+/* v10: Razorpay webhook status */
+.hook-status { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 10px 0; font-size: 14px; }
+.hook-status.ok { color: var(--green); } .hook-status.ok b { color: var(--green); }
+.hook-status.wait { color: var(--text-2); }
+.hook-moved { margin: 12px 0; padding: 14px 16px; border-radius: 14px; background: color-mix(in srgb, var(--orange) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--orange) 35%, transparent); }
+.hook-moved > b { display: flex; align-items: center; gap: 6px; color: var(--orange); }
+.hook-moved p { margin: 6px 0; font-size: 14px; }
+.hook-moved .mono { overflow-wrap: anywhere; }
+.hook-moved-banner { display: flex; align-items: center; gap: 12px; margin: 10px 0 16px; padding: 12px 14px; border-radius: 14px; text-decoration: none; color: var(--text);
+  background: color-mix(in srgb, var(--orange) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--orange) 35%, transparent); }
+.hook-moved-banner:hover { text-decoration: none; color: var(--text); }
+.hook-moved-banner > svg:first-child { color: var(--orange); flex: none; }
+.hook-moved-banner span { flex: 1; min-width: 0; } .hook-moved-banner b { display: block; } .hook-moved-banner small { display: block; color: var(--text-2); font-size: 13px; }

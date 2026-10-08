@@ -5,6 +5,7 @@ import { checkCsrf, requireLogin } from "../auth.js";
 import { reply, resetConversation } from "../agent.js";
 import { aiConnection, listModels, saveAIConnection, savedKeyFor, testAI, usageThisMonth } from "../ai/registry.js";
 import { DEFAULT_PROVIDER, PROVIDERS, providerById, versionLabel } from "../ai/providers.js";
+import { razorpayHookMoved } from "../payments.js";
 import { missingGoogleScopes, googleAuthUrl, googleExchange, googleRevoke, googleSignInEnabled, listWritableCalendars, parseServiceAccount, testCalendarFor } from "../calendar.js";
 import { db, logActivity, Workspace } from "../db.js";
 import { env } from "../env.js";
@@ -100,6 +101,7 @@ setupRoutes.get("/", requireLogin, async (req, res) => {
       body: html`
         <p class="eyebrow">${greet}${firstName(u.name) ? `, ${firstName(u.name)}` : ""}</p>
         <h1>${w.business_name || "Your booking assistant"}</h1>
+        ${razorpayHookMoved(w) ? html`<a class="hook-moved-banner" href="/setup/payments#webhook">${icon("bell", 15)} <span><b>Update your Razorpay webhook</b><small>Our address changed. Payments still confirm within a minute; it's a 1-minute fix to make them instant again.</small></span>${icon("chevron", 14)}</a>` : ""}
         ${u.role === "admin" && !w.business_done ? html`<div class="flash info" data-toast="info">You're an admin. Manage accounts in Admin, or set up a business here to try the product yourself.</div>` : ""}
         ${coreDone === 0 && !live.length
           ? html`<div class="card welcome">

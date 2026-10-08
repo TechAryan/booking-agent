@@ -34,6 +34,20 @@ export function razorpayReady(ws: Workspace) {
   return !!(ws.razorpay_key_id && ws.razorpay_secret_enc);
 }
 
+/** The webhook address a business should have in Razorpay right now. */
+export const razorpayHookUrl = (ws: Workspace) => `${env.webhookBase || env.publicUrl}/webhooks/razorpay/${ws.public_id}`;
+
+/**
+ * Razorpay doesn't let apps set webhooks on a business's own account, so we watch for drift instead:
+ * the address we last showed them changed (e.g. we moved domains), or events still arrive on the old direct
+ * address although the edge worker is in front now.
+ */
+export function razorpayHookMoved(ws: Workspace) {
+  if (!razorpayReady(ws)) return false;
+  if (ws.rzp_hook_url && ws.rzp_hook_url !== razorpayHookUrl(ws)) return true;
+  return !!(env.webhookBase && ws.rzp_hook_via === "app");
+}
+
 function keysOf(ws: Workspace) {
   const secret = decrypt(ws.razorpay_secret_enc);
   if (!ws.razorpay_key_id || !secret) throw new Error("Razorpay is not connected.");
