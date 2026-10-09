@@ -10,6 +10,7 @@ import { authRoutes } from "./routes/auth.js";
 import { adminRoutes } from "./routes/admin.js";
 import { setupRoutes } from "./routes/setup.js";
 import { extraRoutes } from "./routes/extras.js";
+import { websiteRoutes } from "./routes/website.js";
 import { backfillPaymentChecks } from "./bookings.js";
 import { internalRoutes } from "./routes/internal.js";
 import { runDueJobs } from "./jobs.js";
@@ -23,7 +24,8 @@ app.disable("x-powered-by");
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-  if (!req.path.startsWith("/w/")) res.setHeader("X-Frame-Options", "DENY");
+  // The website chat (/w/) is embedded on other sites; the website preview is shown in our own editor.
+  if (!req.path.startsWith("/w/")) res.setHeader("X-Frame-Options", req.path === "/setup/website/preview" || req.path.startsWith("/p/") ? "SAMEORIGIN" : "DENY");
   next();
 });
 
@@ -66,6 +68,7 @@ app.use(authRoutes);
 app.use(adminRoutes);
 app.use(setupRoutes);
 app.use(extraRoutes);
+app.use(websiteRoutes);
 
 app.use((_req, res) => res.status(404).send("Page not found."));
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

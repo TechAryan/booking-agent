@@ -33,7 +33,7 @@ export async function saveProofImage(ws: Workspace, sender: string, buf: Buffer,
   let key: string | null = null;
   if (storageReady() && (await r2Room(buf.length))) {
     key = `proofs/${ws.id}/${Date.now()}-${randomBytes(6).toString("hex")}.${m2.split("/")[1]}`;
-    try { await putFile(key, buf, m2); r2Used! += buf.length; } catch (e: any) { console.error("photo upload, keeping it in the database:", e?.message); key = null; }
+    try { await putFile(key, buf, m2); noteR2Bytes(buf.length); } catch (e: any) { console.error("photo upload, keeping it in the database:", e?.message); key = null; }
   }
   const r = await db.run("INSERT INTO payment_proofs (workspace_id, sender, image, mime, caption, r2_key, bytes) VALUES (?,?,?,?,?,?,?)",
     ws.id, sender, key ? "" : buf.toString("base64"), m2, caption.slice(0, 300), key, buf.length);
@@ -41,7 +41,7 @@ export async function saveProofImage(ws: Workspace, sender: string, buf: Buffer,
 }
 
 /** Big photos are resized (max 1600 px) and re-saved as JPEG: still sharp enough to read, about a third of the size. */
-async function shrink(buf: Buffer, mime: string): Promise<{ buf: Buffer; mime: string }> {
+export async function shrink(buf: Buffer, mime: string): Promise<{ buf: Buffer; mime: string }> {
   if (buf.length < 200 * 1024 || mime === "image/gif") return { buf, mime };
   try {
     const sharp = (await import("sharp")).default;
@@ -57,12 +57,14 @@ export const r2CapBytes = () => Math.round(Number(process.env.R2_MAX_GB || 9) * 
 let r2Used: number | null = null, r2CountedAt = 0;
 export async function r2UsedBytes(): Promise<number> {
   if (r2Used === null || Date.now() - r2CountedAt > 10 * 60_000) {
-    const row = await db.get<{ b: number }>("SELECT COALESCE(SUM(bytes),0) AS b FROM payment_proofs WHERE r2_key IS NOT NULL");
+    const row = await db.get<{ b: number }>("SELECT (SELECT COALESCE(SUM(bytes),0) FROM payment_proofs WHERE r2_key IS NOT NULL) + (SELECT COALESCE(SUM(bytes),0) FROM site_photos WHERE r2_key IS NOT NULL) AS b");
     r2Used = Number(row?.b ?? 0); r2CountedAt = Date.now();
   }
   return r2Used;
 }
-async function r2Room(size: number) {
+/** Counts bytes we just put in R2 (so the cap is right before the next recount). */
+export function noteR2Bytes(n: number) { if (r2Used !== null) r2Used += n; }
+export async function r2Room(size: number) {
   const ok = (await r2UsedBytes()) + size <= r2CapBytes();
   if (!ok && !capHit) console.warn("[storage] R2 cap reached; keeping new photos in the database");
   capHit = !ok;

@@ -14,3 +14,8 @@ APP_URL = "https://booking-agent-1-jv73.onrender.com"
 
 [triggers]
 crons = ["* * * * *"]
+
+# Website photos are read straight from the photo bucket (optional; without it the app serves them).
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "booking-agent-files"

@@ -80,6 +80,7 @@ setupRoutes.get("/", requireLogin, async (req, res) => {
     { key: "payments", title: "Payments", desc: payReady ? (w.razorpay_key_id ? "Razorpay connected" : "UPI set up") + (w.online_discount_pct ? ` · ${w.online_discount_pct}% online discount` : "") : anyPaid ? "You have paid services: let customers pay online" : "Online payment, pay at venue, discount", done: payReady, show: true, optional: true, extra: true },
     { key: "holidays", title: "Holidays", desc: holidaysN ? `${holidaysN} upcoming closed day${holidaysN === 1 ? "" : "s"}` : "Days you're closed: no bookings then", done: holidaysN > 0, show: true, optional: true, extra: true },
     { key: "widget", title: "Website chat widget", desc: "A booking chat on your website", done: !!w.widget_enabled, show: !!u.perm_widget, optional: true },
+    { key: "website", title: "Your website", desc: w.site_live ? "Live · updates itself when prices or hours change" : "A free one-page website made from your details", done: !!w.site_live, show: true, optional: true, extra: true },
     { key: "whatsapp", title: "Connect WhatsApp", desc: "Customers book by messaging you", done: !!w.whatsapp_enabled, show: !!u.perm_whatsapp, optional: true },
   ];
   const shown = steps.filter((s) => s.show);
@@ -142,7 +143,7 @@ setupRoutes.get("/", requireLogin, async (req, res) => {
             ${shown.map(
               (s) => html`<li>
                 <a class="row-link" href="/setup/${s.key}">
-                  ${tile(s.key === "google" ? "calendar" : s.key === "profile" ? "profile" : s.key === "payments" ? "wallet" : s.key === "holidays" ? "holiday" : s.key)}
+                  ${tile(s.key === "google" ? "calendar" : s.key === "profile" ? "profile" : s.key === "payments" ? "wallet" : s.key === "holidays" ? "holiday" : s.key === "website" ? "globe" : s.key)}
                   <span class="grow"><b>${s.title}</b>${s.optional ? html` <span class="tag">Optional</span>` : ""}<small>${s.desc}</small></span>
                   ${s.done ? html`<span class="state done">${icon("check", 14)} Done</span>` : s.key === next?.key ? html`<span class="state next">Next</span>` : ""}
                   <span class="chev">${icon("chevron", 16)}</span>

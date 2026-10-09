@@ -2,6 +2,7 @@
 //  - Webhooks: check the provider's signature, save the raw event to the `inbox` table, answer 200 at once,
 //    then wake the app to process it. Same URL paths as the app, so switching is only a URL change.
 //  - Timer (every minute): wake the app only when a job is due or an event has waited too long.
+//  - Business websites: /p/<slug> from the database (cached a minute), photos from R2.
 //  - If the database can't be reached, the request is passed straight to the app (old behaviour).
 import { createClient, type Client } from "@libsql/client/web";
 import { decryptSecret, hmacHex, internalSig, safeEqual, sha256Hex } from "../../shared/webcrypto.js";
@@ -11,6 +12,47 @@ export interface Env {
   TURSO_TOKEN?: string;
   APP_SECRET: string;
   APP_URL: string; // e.g. https://booking-agent-1-jv73.onrender.com
+  /** Optional R2 binding (wrangler.toml) for website photos; without it photos come from the app. */
+  FILES?: { get(key: string): Promise<{ body: ReadableStream; httpMetadata?: { contentType?: string } } | null> };
+}
+
+const PAGE_HEADERS = {
+  "Content-Type": "text/html; charset=utf-8",
+  "Cache-Control": "public, max-age=60",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Content-Security-Policy": "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+};
+
+/** Business website pages and their photos. */
+async function handleSite(req: Request, env: Env, ctx: Ctx, slug: string, img?: string): Promise<Response> {
+  const cache = (globalThis as any).caches?.default as Cache | undefined;
+  const hit = cache ? await cache.match(req) : undefined;
+  if (hit) return hit;
+  let res: Response;
+  try {
+    if (!img) {
+      const rs = await dbFor(env).execute({ sql: "SELECT html FROM sites WHERE slug=? AND html IS NOT NULL", args: [slug] });
+      const html = (rs.rows[0] as any)?.html;
+      if (!html) return new Response("This page isn't published.", { status: 404, headers: { "Content-Type": "text/plain" } });
+      res = new Response(String(html), { headers: PAGE_HEADERS });
+    } else {
+      const rs = await dbFor(env).execute({
+        sql: "SELECT p.r2_key, p.mime FROM site_photos p JOIN sites s ON s.workspace_id=p.workspace_id WHERE s.slug=? AND s.html IS NOT NULL AND p.id=?",
+        args: [slug, img],
+      });
+      const row = rs.rows[0] as any;
+      if (!row) return new Response("Not found", { status: 404 });
+      const obj = row.r2_key && env.FILES ? await env.FILES.get(String(row.r2_key)) : null;
+      if (!obj) return forward(env, req, new ArrayBuffer(0)); // stored in the database: the app serves it
+      res = new Response(obj.body, { headers: { "Content-Type": String(row.mime || "image/jpeg"), "Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff" } });
+    }
+  } catch (e) {
+    console.error("edge: database problem, passing to the app", (e as Error)?.message);
+    return forward(env, req, new ArrayBuffer(0));
+  }
+  if (cache) ctx.waitUntil(cache.put(req, res.clone()));
+  return res;
 }
 interface Ctx { waitUntil(p: Promise<unknown>): void }
 
@@ -81,6 +123,8 @@ function forward(env: Env, req: Request, raw: ArrayBuffer) {
 async function handle(req: Request, env: Env, ctx: Ctx): Promise<Response> {
   const url = new URL(req.url);
   if (req.method === "GET" && url.pathname === "/healthz") return new Response("ok");
+  const site = req.method === "GET" ? url.pathname.match(/^\/p\/([a-z0-9-]{3,40})(?:\/img\/([a-z0-9]{6,40}))?\/?$/) : null;
+  if (site) return handleSite(req, env, ctx, site[1]!, site[2]);
   const wa = url.pathname.match(/^\/webhooks\/wa\/([a-z0-9]{2,20})\/([A-Za-z0-9_-]{4,64})\/([A-Za-z0-9]{16,64})$/);
   if (wa) return handleWa(req, env, ctx, wa[1]!, wa[2]!, wa[3]!);
   const m = url.pathname.match(/^\/webhooks\/(kapso|razorpay)\/([A-Za-z0-9_-]{4,64})$/);

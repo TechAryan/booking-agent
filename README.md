@@ -72,6 +72,15 @@ with pretend tools (the calendar isn't touched). Code: `src/ai/` (one adapter pe
 list, `registry.ts` for the connection and usage counts). Chats are stored in one format, so switching AI keeps them.
 Keys for each AI a business tried stay saved (encrypted), so switching back needs no re-paste.
 
+## Website (one page per business)
+
+Setup → **Your website** → **Create my website**: the business's AI writes the words as JSON (never HTML), from
+the business's own details only. The owner edits words, colour, sections and photos, previews, then **Save and
+publish**. The page lives at `<edge>/p/<slug>` (the edge worker reads it from the database, cached a minute; photos
+come from R2). Prices, services, hours and contact details republish automatically two minutes after a change, using
+the published words (draft edits stay private until published). Pages have no scripts, a strict CSP and Google
+business markup. Code: `src/sites/`, `src/routes/website.ts`. Own domains come next.
+
 ## WhatsApp providers
 
 Setup → **Connect WhatsApp**. Kapso is first (recommended); Meta direct (cheapest), Twilio, Gupshup, 360dialog,

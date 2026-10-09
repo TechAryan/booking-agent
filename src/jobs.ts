@@ -88,3 +88,9 @@ async function runOne(job: Job) {
     }
   }
 }
+
+/** The business's website shows something that changed (price, service, hours, contact): republish it in
+ *  2 minutes, once, if it's published (several quick edits fold into one run). Handler: src/sites/index.ts. */
+export function markSiteDirty(wsId: number) {
+  return enqueue(wsId, "site_publish", `ws:${wsId}`, Date.now() + Number(process.env.SITE_REPUBLISH_MS ?? 120_000)).catch(() => undefined);
+}

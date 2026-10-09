@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { markSiteDirty } from "./jobs.js";
 import { deleteFile } from "./storage.js";
 import { db, User, Workspace } from "./db.js";
 import { decrypt, hashPassword, randomToken } from "./security.js";
@@ -70,9 +71,9 @@ export async function countActiveAdmins(): Promise<number> {
 export async function deleteUser(userId: number) {
   const ws = await db.get<{ id: number }>("SELECT id FROM workspaces WHERE user_id = ?", userId);
   if (ws) {
-    const files = await db.all<{ r2_key: string }>("SELECT r2_key FROM payment_proofs WHERE workspace_id = ? AND r2_key IS NOT NULL", ws.id);
+    const files = await db.all<{ r2_key: string }>("SELECT r2_key FROM payment_proofs WHERE workspace_id = ? AND r2_key IS NOT NULL UNION ALL SELECT r2_key FROM site_photos WHERE workspace_id = ? AND r2_key IS NOT NULL", ws.id, ws.id);
     for (const f of files) await deleteFile(f.r2_key).catch((e) => console.error("photo delete", f.r2_key, e?.message));
-    for (const t of ["inbox", "jobs", "connections", "calls", "sites", "do_not_call", "activity", "services", "holidays", "knowledge", "offers", "bookings", "payment_proofs"]) await db.run(`DELETE FROM ${t} WHERE workspace_id = ?`, ws.id);
+    for (const t of ["inbox", "jobs", "connections", "calls", "sites", "site_photos", "do_not_call", "activity", "services", "holidays", "knowledge", "offers", "bookings", "payment_proofs"]) await db.run(`DELETE FROM ${t} WHERE workspace_id = ?`, ws.id);
     await db.run("DELETE FROM conversations WHERE workspace_id = ?", ws.id);
     await db.run("DELETE FROM workspaces WHERE id = ?", ws.id);
   }
@@ -167,7 +168,12 @@ export async function updateWorkspace(id: number, fields: Partial<Workspace>) {
   const sql = `UPDATE workspaces SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = datetime('now') WHERE id = ?`;
   const values = keys.map((k) => ((fields as any)[k] === undefined ? null : (fields as any)[k]));
   await db.run(sql, ...values, id);
+  if (keys.some((k) => ON_WEBSITE.has(k))) await markSiteDirty(id);
 }
+
+/** Workspace fields that appear on the business's website. */
+const ON_WEBSITE = new Set(["business_name", "open_hour", "close_hour", "working_days", "contact_email", "contact_phone", "address", "maps_url",
+  "online_discount_pct", "widget_enabled", "whatsapp_enabled", "kapso_display_number", "wa_display", "wa_provider", "timezone"]);
 
 export function recentActivity(workspaceId: number, limit = 20) {
   return db.all<{ kind: string; channel: string; detail: string; created_at: string }>(

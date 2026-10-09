@@ -16,6 +16,19 @@ function claude(j, key) {
       is_payment_screenshot: !("junk" in f), successful: f.ok !== "0", amount: f.amt ? Number(f.amt) : null, utr: f.utr || "", payee_upi_id: f.vpa || "", payee_name: f.name || "", paid_at: f.at || "",
     } }], "tool_use")];
   }
+  if (j.tool_choice?.name === "landing_copy") {
+    const src = typeof j.messages[0].content === "string" ? j.messages[0].content : j.messages[0].content.map((c) => c.text ?? "").join("");
+    const svcs = [...src.matchAll(/^- ([^(:\n]+?) \(/gm)].map((m) => m[1]);
+    const tone = src.match(/Tone: ([^.]+)\./)?.[1] ?? "";
+    return [200, msg([{ type: "tool_use", id: "lc", name: "landing_copy", input: {
+      headline: `<script>alert(1)</script> ${src.match(/Business: ([^\n(]+)/)?.[1]?.trim() ?? "Shop"}${tone ? " " + tone : ""}`,
+      subheadline: "Relaxing care, booked in a minute on WhatsApp.",
+      about: "We are a friendly studio.\n\nBook online & pay at the venue.",
+      services: svcs.map((n) => ({ name: n, blurb: `Our ${n.toLowerCase()} treatment.` })).concat([{ name: "Invented service", blurb: "should be dropped" }]),
+      faqs: [{ q: "Do I need to book?", a: "Yes, book on WhatsApp." }, { q: "Can I pay online?", a: "Yes, and save 10%." }],
+      seo_title: "Glow Studio — Facials in Bengaluru", seo_description: "Facials and consultations. Book on WhatsApp.", cta: "Book now",
+    } }], "tool_use")];
+  }
   if (j.tool_choice?.name === "save_business_profile") {
     const src = j.messages[0].content;
     return [200, msg([{ type: "tool_use", id: "tp", name: "save_business_profile", input: {

@@ -434,6 +434,18 @@ CREATE TABLE IF NOT EXISTS sites (
   domain_status TEXT
 );
 
+-- Website photos (R2 when set up, else in the database). id is random and public (used in image links).
+CREATE TABLE IF NOT EXISTS site_photos (
+  id TEXT PRIMARY KEY,
+  workspace_id INTEGER NOT NULL,
+  r2_key TEXT,
+  data TEXT,
+  mime TEXT NOT NULL DEFAULT 'image/jpeg',
+  bytes INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS site_photos_ws ON site_photos(workspace_id);
+
 CREATE TABLE IF NOT EXISTS do_not_call (
   workspace_id INTEGER NOT NULL,
   customer_key TEXT NOT NULL,
@@ -493,6 +505,11 @@ const MIGRATIONS: [string, string, string][] = [
   ["workspaces", "razorpay_key_id", "TEXT NOT NULL DEFAULT ''"],
   ["workspaces", "razorpay_secret_enc", "TEXT"],
   ["workspaces", "razorpay_webhook_secret_enc", "TEXT"],
+  ["sites", "html", "TEXT"], // the published page
+  ["sites", "pub_copy", "TEXT"], // words and settings as published (auto-republish uses these, not the draft)
+  ["sites", "pub_config", "TEXT"],
+  ["sites", "updated_at", "INTEGER"],
+  ["workspaces", "site_live", "INTEGER NOT NULL DEFAULT 0"],
   ["workspaces", "wa_provider", "TEXT"], // null = Kapso (older accounts)
   ["workspaces", "wa_hook_secret_enc", "TEXT"], // secret in the webhook path for non-Kapso providers
   ["workspaces", "wa_display", "TEXT"],
@@ -611,6 +628,7 @@ export interface Workspace {
   razorpay_webhook_secret_enc: string | null;
   rzp_hook_url: string | null;
   wa_provider: string | null;
+  site_live: number;
   wa_hook_secret_enc: string | null;
   wa_display: string | null;
   wa_pending_secret_enc: string | null;

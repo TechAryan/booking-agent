@@ -291,6 +291,22 @@ await page.reload();
 ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)), "WhatsApp provider page fits a phone screen");
 await shot("10b-whatsapp-meta-mobile");
 await page.setViewportSize({ width: 1200, height: 900 });
+// Website builder
+await page.goto(`${BASE}/setup/website`);
+await clickAndSeeSpinner('form[action="/setup/website/create"] button', "Create my website");
+ok((await toastText()).includes("ready to check"), "website written toast");
+await page.click('label.sw:nth-child(3)');
+ok(await page.$eval('label.sw:nth-child(3) input', (i) => i.checked), "colour swatch picks");
+await Promise.all([page.waitForNavigation(), page.click('form.site-form button[value="publish"]')]); // real submit: the clicked button's value must arrive
+{ const t = await toastText(); ok(t.includes("Published"), "website published toast", t); }
+await page.setViewportSize({ width: 390, height: 844 });
+await page.goto(`${BASE}/setup/website`);
+ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)), "website editor fits a phone screen");
+const pv = page.frameLocator("iframe.site-preview");
+await page.locator("iframe.site-preview").scrollIntoViewIfNeeded();
+ok(((await pv.locator("h1").textContent({ timeout: 5000 }).catch(() => "")) || "").length > 3, "preview shows the page inside the editor");
+await shot("10c-website-editor-mobile");
+await page.setViewportSize({ width: 1200, height: 900 });
 
 // ---------- v7 pages ----------
 await page.goto(`${BASE}/setup/profile`);

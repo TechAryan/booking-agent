@@ -1,5 +1,6 @@
 import { DateTime } from "luxon";
 import { db, Workspace } from "./db.js";
+import { markSiteDirty } from "./jobs.js";
 
 // ============================================================ Services
 
@@ -51,6 +52,7 @@ export async function listServices(ws: Workspace): Promise<Service[]> {
 
 /** Replaces the whole list (used by the setup form). Keeps ids of rows that still exist so bookings/offers keep pointing right. */
 export async function saveServices(ws: Workspace, rows: (ServiceInput & { id?: number | string })[]) {
+  void markSiteDirty(ws.id);
   const existing = await listServices(ws);
   const keep = new Set<number>();
   let sort = 0;
@@ -71,6 +73,7 @@ export async function saveServices(ws: Workspace, rows: (ServiceInput & { id?: n
 }
 
 export async function addService(ws: Workspace, input: ServiceInput) {
+  void markSiteDirty(ws.id);
   const c = cleanService(input);
   if (!c) throw new Error("A service needs a name.");
   const all = await listServices(ws);
@@ -81,6 +84,7 @@ export async function addService(ws: Workspace, input: ServiceInput) {
 }
 
 export async function updateService(ws: Workspace, id: number, patch: Partial<ServiceInput>) {
+  void markSiteDirty(ws.id);
   const cur = (await listServices(ws)).find((s) => s.id === id);
   if (!cur) throw new Error("No service with that id.");
   const c = cleanService({ ...cur, ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) } as ServiceInput);
@@ -91,6 +95,7 @@ export async function updateService(ws: Workspace, id: number, patch: Partial<Se
 }
 
 export async function deleteService(ws: Workspace, id: number) {
+  void markSiteDirty(ws.id);
   const r = await db.run("DELETE FROM services WHERE id=? AND workspace_id=?", id, ws.id);
   if (!r.changes) throw new Error("No service with that id.");
   await syncServiceNames(ws);
@@ -123,6 +128,7 @@ export function listOffers(ws: Workspace) {
 }
 
 export async function addOffer(ws: Workspace, o: { label?: string; percent: number; service_id?: number | null; customer_phone?: string | null; starts_on?: string | null; ends_on?: string | null }) {
+  void markSiteDirty(ws.id);
   const pct = Number(o.percent);
   if (!(pct > 0 && pct <= 100)) throw new Error("Discount must be between 1 and 100 percent.");
   const d = (x?: string | null) => (x && /^\d{4}-\d{2}-\d{2}$/.test(x) ? x : null);
@@ -135,6 +141,7 @@ export async function addOffer(ws: Workspace, o: { label?: string; percent: numb
 }
 
 export async function deleteOffer(ws: Workspace, id: number) {
+  void markSiteDirty(ws.id);
   const r = await db.run("DELETE FROM offers WHERE id=? AND workspace_id=?", id, ws.id);
   if (!r.changes) throw new Error("No offer with that id.");
 }

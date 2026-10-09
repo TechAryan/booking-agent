@@ -61,6 +61,22 @@ for (let i = 0; i < 30 && !done; i++) { await sleep(200); done = (await db.execu
 ok(done, "and the job runs");
 
 
+// Business websites
+const siteRow = (await db.execute("SELECT s.slug, p.id AS photo FROM sites s LEFT JOIN site_photos p ON p.workspace_id=s.workspace_id WHERE s.html IS NOT NULL LIMIT 1")).rows[0] as any;
+if (siteRow) {
+  r = await worker.fetch(new Request(`https://edge.example/p/${siteRow.slug}`), env, ctx);
+  const pageText = await r.text();
+  ok(r.status === 200 && pageText.includes("<!doctype html>") && (r.headers.get("content-security-policy") || "").includes("default-src 'none'"), "edge serves a published website from the database");
+  r = await worker.fetch(new Request("https://edge.example/p/no-such-shop"), env, ctx);
+  ok(r.status === 404, "edge: unknown website 404");
+  if (siteRow.photo) {
+    r = await worker.fetch(new Request(`https://edge.example/p/${siteRow.slug}/img/${siteRow.photo}`), env, ctx);
+    ok(r.status === 200 && /^image\//.test(r.headers.get("content-type") || ""), "edge: photo served (from the app when there's no R2 binding)");
+  }
+  r = await worker.fetch(new Request(`https://edge.example/p/${siteRow.slug}`), { ...env, TURSO_URL: "http://localhost:1" }, ctx);
+  ok(r.status === 200, "edge: website still served by the app when the database is down");
+} else ok(false, "a published website exists for the edge checks");
+
 // Database unreachable: the edge passes the request straight to the app.
 const body2 = msg("wamid.edge2", "919722222222", "fallback please");
 r = await send(body2, sign(body2), { ...env, TURSO_URL: "http://localhost:1" });

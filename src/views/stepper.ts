@@ -22,6 +22,7 @@ export function stepNav(req: Request, active: string, w?: Workspace) {
     { key: "payments", label: "Payments", ic: "wallet", done: !!(w?.razorpay_key_id || w?.upi_id), optional: true },
     { key: "holidays", label: "Holidays", ic: "holiday", done: false, optional: true },
     ...(u.perm_widget ? [{ key: "widget", label: "Widget", ic: "widget", done: !!w?.widget_enabled, optional: true }] : []),
+    { key: "website", label: "Website", ic: "globe", done: !!w?.site_live, optional: true },
     ...(u.perm_whatsapp ? [{ key: "whatsapp", label: "WhatsApp", ic: "whatsapp", done: !!w?.whatsapp_enabled, optional: true }] : []),
   ];
   const i = Math.max(0, steps.findIndex((s) => s.key === active));
