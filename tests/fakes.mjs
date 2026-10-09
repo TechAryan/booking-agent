@@ -272,6 +272,58 @@ async function fakeWa(p, rest, req, raw, res) {
   json(404, { error: { message: `fake ${p}: no route ${req.method} ${path}` } });
 }
 
+// ---- Fake calling providers (Phase 4). Mounted at /voice/<provider>/…; every request is logged as { voice, method, path, body }.
+const VOICE_KEYS = { bolna: "Bearer bolna-good", retell: "Bearer retell-good", elevenlabs: "el-good", sarvam: "sv-good" };
+const voiceCalls = new Map(); // provider call id → { to, vars }
+let voiceSeq = 0;
+function fakeVoice(p, rest, req, raw, res) {
+  const json = (code, obj) => { res.statusCode = code; res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(obj)); };
+  const path = new URL(rest, "http://x").pathname;
+  let j = {}; try { j = raw ? JSON.parse(raw) : {}; } catch {}
+  const h = req.headers;
+  const key = p === "elevenlabs" ? h["xi-api-key"] : p === "sarvam" ? h["x-api-key"] : h.authorization;
+  if (key !== VOICE_KEYS[p]) return json(401, { message: "Invalid API key" });
+  log({ voice: p, method: req.method, path, body: j });
+  let m;
+  if (p === "bolna") {
+    if (path === "/user/me") return json(200, { id: "u1", wallet: 5 });
+    if (path === "/phone-numbers/all") return json(200, [{ id: "pn-1", phone_number: "+918012345678", telephony_provider: "plivo" }]);
+    if (path === "/v2/agent" && req.method === "POST") return json(200, { agent_id: "bolna-agent-1", status: "created" });
+    if ((m = path.match(/^\/v2\/agent\/([\w-]+)$/)) && req.method === "PUT") return json(200, { agent_id: m[1], state: "updated" });
+    if (path === "/inbound/setup" || path === "/inbound/unlink") return json(200, { ok: true });
+    if (path === "/call") { const id = `ex-${++voiceSeq}`; voiceCalls.set(id, { to: j.recipient_phone_number, vars: j.user_data }); return json(200, { execution_id: id, status: "queued" }); }
+    if ((m = path.match(/^\/executions\/([\w-]+)$/))) {
+      if (m[1].startsWith("in-")) return json(200, { id: m[1], telephony_data: { call_type: "inbound", from_number: "+91" + m[1].slice(3), to_number: "+918012345678" }, context_details: {} });
+      const c = voiceCalls.get(m[1]);
+      return c ? json(200, { id: m[1], telephony_data: { call_type: "outbound", to_number: c.to, from_number: "+918012345678" }, context_details: { recipient_data: c.vars } }) : json(404, { message: "not found" });
+    }
+  }
+  if (p === "retell") {
+    if (path === "/list-phone-numbers") return json(200, [{ phone_number: "+918011112222" }]);
+    if (path === "/create-retell-llm") return json(201, { llm_id: "llm_1" });
+    if (path.startsWith("/update-retell-llm/")) return json(200, { llm_id: "llm_1" });
+    if (path === "/create-agent") return json(201, { agent_id: "ag_r1" });
+    if (path.startsWith("/update-agent/")) return json(200, { agent_id: "ag_r1" });
+    if (path.startsWith("/update-phone-number/")) return json(200, { phone_number: decodeURIComponent(path.split("/").pop()) });
+    if (path === "/v2/create-phone-call") return json(201, { call_id: `call_r${++voiceSeq}`, call_status: "registered" });
+  }
+  if (p === "elevenlabs") {
+    if (path === "/v1/convai/phone-numbers") return json(200, [{ phone_number_id: "pn_el", phone_number: "+918033334444", provider: "exotel" }]);
+    if (path === "/v1/convai/tools" && req.method === "POST") return json(200, { id: `tool_${j.tool_config?.name}` });
+    if (path.startsWith("/v1/convai/tools/")) return json(200, { id: path.split("/").pop() });
+    if (path === "/v1/convai/agents/create") return json(200, { agent_id: "agent_el1" });
+    if (path.startsWith("/v1/convai/agents/")) return json(200, { agent_id: "agent_el1" });
+    if (path === "/v1/workspace/webhooks") return json(200, { webhook_id: "wh_el1", webhook_secret: "el-hook-secret" });
+    if (path === "/v1/convai/settings") return json(200, {});
+    if (path.startsWith("/v1/convai/phone-numbers/")) return json(200, {});
+    if (/^\/v1\/convai\/(twilio|exotel|sip-trunk)\/outbound-call$/.test(path)) return json(200, { success: true, conversation_id: `conv_${++voiceSeq}` });
+  }
+  if (p === "sarvam") {
+    if (/^\/api\/outbounds\/v1\/orgs\/[\w-]+\/workspaces\/[\w-]+\/outbounds$/.test(path)) return json(200, { attempt_id: `att_${++voiceSeq}` });
+  }
+  json(404, { message: `fake ${p}: no route ${req.method} ${path}` });
+}
+
 const r2 = new Map(); // fake Cloudflare R2 (S3 API): /r2/<bucket>/<key>
 http.createServer((req, res) => {
   let wam;
@@ -279,6 +331,12 @@ http.createServer((req, res) => {
     const chunks = [];
     req.on("data", (c) => chunks.push(c));
     return req.on("end", () => fakeWa(wam[1], wam[2], req, Buffer.concat(chunks).toString("utf8"), res).catch((e) => { res.statusCode = 500; res.end(String(e)); }));
+  }
+  let vm;
+  if ((vm = req.url.match(/^\/voice\/(bolna|retell|elevenlabs|sarvam)(\/.*)$/))) {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    return req.on("end", () => fakeVoice(vm[1], vm[2], req, Buffer.concat(chunks).toString("utf8"), res));
   }
   if (req.url.startsWith("/r2/")) {
     const chunks = [];

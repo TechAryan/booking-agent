@@ -143,5 +143,32 @@ ok(after === "wrote", "the next slot right after is fine");
   ok(!razorpayHookMoved({ ...base, razorpay_key_id: "", rzp_hook_via: "app" }), "Razorpay not connected → no warning");
 }
 
+// ---------- calling agent: settings, hours, signatures ----------
+{
+  const { DateTime } = await import("luxon");
+  const { voiceSettings } = await import("../src/voice/agent.js");
+  const { nextWindow, prevWindow } = await import("../src/voice/index.js");
+  const { retell, retellSign } = await import("../src/voice/retell.js");
+  const { elevenlabs, elevenSign } = await import("../src/voice/elevenlabs.js");
+  const s = voiceSettings({ voice_settings: JSON.stringify({ enabled: true, start: 6, end: 23, dailyCap: 9999, remind: "weird" }) });
+  ok(s.start === 9 && s.end === 21, "calling hours can't go outside 9 am – 9 pm (TRAI)");
+  ok(s.dailyCap === 500 && s.remind === "3h", "daily cap capped; bad reminder falls back");
+  const tz = { timezone: "Asia/Kolkata" } as any;
+  const at = (iso: string) => DateTime.fromISO(iso, { zone: "Asia/Kolkata" });
+  ok(nextWindow(tz, s, at("2026-10-10T07:30")).toFormat("yyyy-MM-dd HH:mm") === "2026-10-10 09:00", "too early → 9 am same day");
+  ok(nextWindow(tz, s, at("2026-10-10T21:10")).toFormat("yyyy-MM-dd HH:mm") === "2026-10-11 09:00", "too late → 9 am next day");
+  ok(nextWindow(tz, s, at("2026-10-10T14:00")).toFormat("HH:mm") === "14:00", "inside hours → unchanged");
+  ok(prevWindow(tz, s, at("2026-10-11T07:00")).toFormat("yyyy-MM-dd HH:mm") === "2026-10-10 20:45", "reminder before 9 am → previous evening");
+  ok(prevWindow(tz, s, at("2026-10-10T22:00")).toFormat("yyyy-MM-dd HH:mm") === "2026-10-10 20:45", "reminder after 9 pm → same evening");
+  const body = '{"call":{"call_id":"c1"}}';
+  const raw = (h: Record<string, string>, url = "https://x/webhooks/voice/retell/a/b") => ({ headers: h, body, url });
+  ok(retell.verify!({ api_key: "k1" }, raw({ "x-retell-signature": retellSign("k1", body) })), "Retell signature accepted");
+  ok(!retell.verify!({ api_key: "k2" }, raw({ "x-retell-signature": retellSign("k1", body) })), "Retell signature with another key refused");
+  ok(!retell.verify!({ api_key: "k1" }, { ...raw({ "x-retell-signature": retellSign("k1", body) }), body: body + " " }), "Retell: changed body refused");
+  ok(elevenlabs.verify!({ webhook_secret: "w" }, raw({ "elevenlabs-signature": elevenSign("w", body) })), "ElevenLabs signature accepted");
+  ok(!elevenlabs.verify!({ webhook_secret: "w" }, raw({ "elevenlabs-signature": elevenSign("w", body, Math.floor(Date.now() / 1000) - 3600) })), "old ElevenLabs signature refused");
+  ok(!elevenlabs.verify!({ webhook_secret: "w" }, raw({})), "unsigned ElevenLabs report refused");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

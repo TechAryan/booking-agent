@@ -82,6 +82,7 @@ setupRoutes.get("/", requireLogin, async (req, res) => {
     { key: "widget", title: "Website chat widget", desc: "A booking chat on your website", done: !!w.widget_enabled, show: !!u.perm_widget, optional: true },
     { key: "website", title: "Your website", desc: w.site_live ? "Live · updates itself when prices or hours change" : "A free one-page website made from your details", done: !!w.site_live, show: true, optional: true, extra: true },
     { key: "whatsapp", title: "Connect WhatsApp", desc: "Customers book by messaging you", done: !!w.whatsapp_enabled, show: !!u.perm_whatsapp, optional: true },
+    { key: "calling", title: "Calling agent", desc: w.voice_provider ? "Connected · confirmation and reminder calls" : "An AI voice that confirms and reminds by phone", done: !!w.voice_provider, show: !!u.perm_calling, optional: true, extra: true },
   ];
   const shown = steps.filter((s) => s.show);
   const core = steps.filter((s) => !s.optional);
@@ -143,7 +144,7 @@ setupRoutes.get("/", requireLogin, async (req, res) => {
             ${shown.map(
               (s) => html`<li>
                 <a class="row-link" href="/setup/${s.key}">
-                  ${tile(s.key === "google" ? "calendar" : s.key === "profile" ? "profile" : s.key === "payments" ? "wallet" : s.key === "holidays" ? "holiday" : s.key === "website" ? "globe" : s.key)}
+                  ${tile(s.key === "google" ? "calendar" : s.key === "profile" ? "profile" : s.key === "payments" ? "wallet" : s.key === "holidays" ? "holiday" : s.key === "website" ? "globe" : s.key === "calling" ? "send" : s.key)}
                   <span class="grow"><b>${s.title}</b>${s.optional ? html` <span class="tag">Optional</span>` : ""}<small>${s.desc}</small></span>
                   ${s.done ? html`<span class="state done">${icon("check", 14)} Done</span>` : s.key === next?.key ? html`<span class="state next">Next</span>` : ""}
                   <span class="chev">${icon("chevron", 16)}</span>

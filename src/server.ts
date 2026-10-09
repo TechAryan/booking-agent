@@ -11,6 +11,7 @@ import { adminRoutes } from "./routes/admin.js";
 import { setupRoutes } from "./routes/setup.js";
 import { extraRoutes } from "./routes/extras.js";
 import { websiteRoutes } from "./routes/website.js";
+import { voiceHooks, voiceRoutes } from "./routes/voice.js";
 import { backfillPaymentChecks } from "./bookings.js";
 import { internalRoutes } from "./routes/internal.js";
 import { runDueJobs } from "./jobs.js";
@@ -45,6 +46,7 @@ app.get("/apple-touch-icon.png", (_req, res) => res.sendFile(path.resolve("publi
 // Public endpoints (widget + WhatsApp webhook) use their own body parsers, so mount them first.
 app.use(publicRoutes);
 app.use(internalRoutes);
+app.use(voiceHooks);
 
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: false, limit: "100kb" }));
@@ -69,6 +71,7 @@ app.use(adminRoutes);
 app.use(setupRoutes);
 app.use(extraRoutes);
 app.use(websiteRoutes);
+app.use(voiceRoutes);
 
 app.use((_req, res) => res.status(404).send("Page not found."));
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

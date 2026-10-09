@@ -480,6 +480,7 @@ export async function initDb() {
     await db.run("DELETE FROM conversations WHERE updated_at < datetime('now','-30 days')");
     await db.run("DELETE FROM inbox WHERE status IN ('done','failed') AND created_at < ?", Date.now() - 7 * 86400_000);
     await db.run("DELETE FROM jobs WHERE status IN ('done','failed','cancelled') AND due_at < ?", Date.now() - 30 * 86400_000);
+    await db.run("UPDATE calls SET transcript=NULL WHERE transcript IS NOT NULL AND created_at < ?", Date.now() - 90 * 86400_000); // call transcripts kept 90 days
   };
   setInterval(() => cleanup().catch((e) => console.error("cleanup failed", e)), 3600_000).unref();
 }
@@ -510,6 +511,14 @@ const MIGRATIONS: [string, string, string][] = [
   ["sites", "pub_config", "TEXT"],
   ["sites", "updated_at", "INTEGER"],
   ["workspaces", "site_live", "INTEGER NOT NULL DEFAULT 0"],
+  ["users", "perm_calling", "INTEGER NOT NULL DEFAULT 1"],
+  ["workspaces", "voice_provider", "TEXT"],
+  ["workspaces", "voice_secret_enc", "TEXT"], // secret in the voice tool and webhook addresses
+  ["calls", "call_key", "TEXT"],
+  ["calls", "attempt", "INTEGER NOT NULL DEFAULT 1"],
+  ["calls", "outcome", "TEXT"],
+  ["calls", "transcript", "TEXT"],
+  ["calls", "updated_at", "INTEGER"],
   ["workspaces", "wa_provider", "TEXT"], // null = Kapso (older accounts)
   ["workspaces", "wa_hook_secret_enc", "TEXT"], // secret in the webhook path for non-Kapso providers
   ["workspaces", "wa_display", "TEXT"],
@@ -536,6 +545,7 @@ const MIGRATIONS: [string, string, string][] = [
 ];
 const POST_MIGRATION = `
 CREATE INDEX IF NOT EXISTS conv_customer ON conversations(workspace_id, customer_key);
+CREATE UNIQUE INDEX IF NOT EXISTS calls_key ON calls(call_key);
 `;
 /**
  * Copy of today's per-provider key columns into `connections`.
@@ -574,6 +584,7 @@ export interface User {
   must_change_password: number;
   perm_widget: number;
   perm_whatsapp: number;
+  perm_calling: number;
   notes: string;
   created_at: string;
   last_login_at: string | null;
@@ -629,6 +640,9 @@ export interface Workspace {
   rzp_hook_url: string | null;
   wa_provider: string | null;
   site_live: number;
+  voice_provider: string | null;
+  voice_secret_enc: string | null;
+  voice_settings: string | null;
   wa_hook_secret_enc: string | null;
   wa_display: string | null;
   wa_pending_secret_enc: string | null;

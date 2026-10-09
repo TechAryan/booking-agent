@@ -91,6 +91,21 @@ WATI); Gallabox and Exotel show the exact address to paste. Webhook addresses ar
 Meta, Twilio and Gallabox signatures are checked again when the message is processed. Code: `src/wa/`.
 WATI, Gallabox and Exotel are marked Beta until confirmed with real accounts.
 
+## Calling agent (optional, per business)
+
+Setup → **Calling agent** (admin turns on "Calling agent" for the user). An AI voice calls customers to confirm a
+booking (soon after booking, if it's more than 3 hours away) and remind them (30 min to 1 day before), and can
+answer the business number. It only calls customers who said yes when booking (the chat assistant asks once),
+between 9 am and 9 pm (TRAI; owners can narrow it), up to a daily limit, and never numbers that said "don't call".
+A missed call is tried once more 30 minutes later; then the owner is told. Paid bookings can be moved, not cancelled.
+
+Providers: **Bolna** (recommended: Indian numbers, Sarvam voices, calls stay in India), ElevenLabs, Retell AI, and
+Sarvam (Beta, agent pasted by hand). Connect creates the agent, its tools and the call-report webhook. The provider's
+AI only talks; every change goes through our tools at `/voice/tool/<provider>/<business>/<secret>/<tool>`, which
+check whose booking it is. Call reports go to `/webhooks/voice/<provider>/<business>/<secret>` (the edge worker
+saves them too); Retell and ElevenLabs signatures are checked. Calls list: `/calls`. Code: `src/voice/`.
+Live tool calls need the app awake during a call (Render free tier can be slow on the first call after a sleep).
+
 ## Photo storage (Cloudflare R2, optional)
 
 Payment screenshots are kept in the database until you add R2 (10 GB free, no download fees):
@@ -205,4 +220,4 @@ Add owner numbers on the WhatsApp page. Messages from those numbers go to a cont
 - Self sign-up and online payment (UPI via Razorpay needs KYC).
 - Editable pricing plans (use "Internal notes" and "Valid until" for now).
 - Emails (the admin shares login details by hand).
-- Reminders before appointments (needs approved WhatsApp templates).
+- WhatsApp reminders before appointments (need approved WhatsApp templates; phone reminders work via the calling agent).

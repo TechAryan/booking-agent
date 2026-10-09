@@ -94,3 +94,9 @@ async function runOne(job: Job) {
 export function markSiteDirty(wsId: number) {
   return enqueue(wsId, "site_publish", `ws:${wsId}`, Date.now() + Number(process.env.SITE_REPUBLISH_MS ?? 120_000)).catch(() => undefined);
 }
+
+/** A booking was made, paid, moved or cancelled: let the calling agent (re)plan its calls, if calling is on. */
+export function bookingChanged(ws: { id: number; voice_settings?: string | null }, bookingId: number) {
+  if (!ws.voice_settings || !/"enabled"\s*:\s*true/.test(ws.voice_settings)) return Promise.resolve();
+  return enqueue(ws.id, "voice_plan", `bk:${bookingId}`, Date.now() + 1000).catch(() => undefined);
+}

@@ -67,12 +67,12 @@ function dbFor(env: Env) {
 }
 
 // Per-business webhook secrets, cached for a minute per worker instance (saves a database read per message).
-type Secrets = { id: number; kapso: string | null; razorpay: string | null; waProvider: string | null; wa: string | null; waPending: string | null };
+type Secrets = { id: number; kapso: string | null; razorpay: string | null; waProvider: string | null; wa: string | null; waPending: string | null; voiceProvider: string | null; voice: string | null };
 const cache = new Map<string, { at: number; v: Secrets | null }>();
 async function secretsFor(env: Env, publicId: string): Promise<Secrets | null> {
   const hit = cache.get(publicId);
   if (hit && Date.now() - hit.at < 60_000) return hit.v;
-  const rs = await dbFor(env).execute({ sql: "SELECT id, kapso_webhook_secret_enc, razorpay_webhook_secret_enc, wa_provider, wa_hook_secret_enc, wa_pending_secret_enc FROM workspaces WHERE public_id = ?", args: [publicId] });
+  const rs = await dbFor(env).execute({ sql: "SELECT id, kapso_webhook_secret_enc, razorpay_webhook_secret_enc, wa_provider, wa_hook_secret_enc, wa_pending_secret_enc, voice_provider, voice_secret_enc FROM workspaces WHERE public_id = ?", args: [publicId] });
   const row = rs.rows[0] as any;
   const v = row
     ? {
@@ -82,6 +82,8 @@ async function secretsFor(env: Env, publicId: string): Promise<Secrets | null> {
         waProvider: row.wa_provider ? String(row.wa_provider) : null,
         wa: await decryptSecret(env.APP_SECRET, row.wa_hook_secret_enc),
         waPending: await decryptSecret(env.APP_SECRET, row.wa_pending_secret_enc),
+        voiceProvider: row.voice_provider ? String(row.voice_provider) : null,
+        voice: await decryptSecret(env.APP_SECRET, row.voice_secret_enc),
       }
     : null;
   if (cache.size > 2000) cache.clear();
@@ -127,6 +129,8 @@ async function handle(req: Request, env: Env, ctx: Ctx): Promise<Response> {
   if (site) return handleSite(req, env, ctx, site[1]!, site[2]);
   const wa = url.pathname.match(/^\/webhooks\/wa\/([a-z0-9]{2,20})\/([A-Za-z0-9_-]{4,64})\/([A-Za-z0-9]{16,64})$/);
   if (wa) return handleWa(req, env, ctx, wa[1]!, wa[2]!, wa[3]!);
+  const vc = req.method === "POST" ? url.pathname.match(/^\/webhooks\/voice\/([a-z0-9]{2,20})\/([A-Za-z0-9_-]{4,64})\/([A-Za-z0-9]{16,64})$/) : null;
+  if (vc) return handleVoice(req, env, ctx, vc[1]!, vc[2]!, vc[3]!);
   const m = url.pathname.match(/^\/webhooks\/(kapso|razorpay)\/([A-Za-z0-9_-]{4,64})$/);
   if (req.method !== "POST" || !m) return new Response("Not found", { status: 404 });
   const [, provider, publicId] = m;
@@ -191,6 +195,30 @@ async function handleWa(req: Request, env: Env, ctx: Ctx, provider: string, publ
   }
   ctx.waitUntil(wake(env, "/internal/drain"));
   return provider === "twilio" ? new Response(TWIML, { headers: { "Content-Type": "text/xml" } }) : new Response("ok");
+}
+
+const VOICE_HEADERS = ["x-retell-signature", "elevenlabs-signature", "content-type"];
+
+/** Call reports from the calling provider: /webhooks/voice/<provider>/<business>/<secret>. Signatures are checked by the app. */
+async function handleVoice(req: Request, env: Env, ctx: Ctx, provider: string, publicId: string, secret: string): Promise<Response> {
+  const raw = await req.arrayBuffer();
+  if (raw.byteLength > 3 * 1024 * 1024) return new Response("Too large", { status: 413 });
+  try {
+    let s = await secretsFor(env, publicId);
+    if (s && !(s.voiceProvider === provider && s.voice && safeEqual(s.voice, secret))) { cache.delete(publicId); s = await secretsFor(env, publicId); }
+    if (!s || s.voiceProvider !== provider || !s.voice || !safeEqual(s.voice, secret)) return new Response("Not found", { status: 404 });
+    const headers: Record<string, string> = { provider, url: req.url };
+    for (const k of VOICE_HEADERS) { const v = req.headers.get(k); if (v) headers[k] = v; }
+    // Same key as the app: body plus signatures (a badly signed copy mustn't block the real report).
+    const sigs = new TextEncoder().encode(`|${headers["x-retell-signature"] ?? ""}|${headers["elevenlabs-signature"] ?? ""}`);
+    const keyBytes = new Uint8Array(raw.byteLength + sigs.byteLength); keyBytes.set(new Uint8Array(raw)); keyBytes.set(sigs, raw.byteLength);
+    await save(env, s.id, "wh:voice", await sha256Hex(keyBytes), headers, new TextDecoder().decode(raw));
+  } catch (e) {
+    console.error("edge: database problem, passing to the app", (e as Error)?.message);
+    return forward(env, req, raw);
+  }
+  ctx.waitUntil(wake(env, "/internal/drain"));
+  return new Response("ok");
 }
 
 /** Minute timer: one indexed query each for due jobs and stuck events; wake the app only if needed. */

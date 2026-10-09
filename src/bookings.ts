@@ -7,7 +7,7 @@ import { findService, inr, listServices, mapsLink, ownerPhones, quote, Quote, Se
 import { cancelPaymentLink, createPaymentLink, fetchPaymentLink, razorpayReady, upiReady } from "./payments.js";
 import { waSend } from "./wa/registry.js";
 import { decrypt, hmacHex } from "./security.js";
-import { enqueue, onJob } from "./jobs.js";
+import { bookingChanged, enqueue, onJob } from "./jobs.js";
 
 export const HOLD_MINUTES = 20; // how long a slot waits for an online payment
 
@@ -20,6 +20,7 @@ export interface Booking {
   status: "held" | "confirmed" | "cancelled" | "paid_unbooked";
   hold_expires_at: number | null; payment_link_id: string | null; pay_url: string | null; payment_id: string | null;
   event_id: string | null; meet_link: string | null; note: string; created_at: string; updated_at: string;
+  call_consent: number;
 }
 
 const REF_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -116,6 +117,7 @@ export interface BookInput {
   byOwner?: boolean;       // the owner is booking for someone: their choice of payment wins over the usual rules
   paidHow?: "cash" | "upi"; // with payment "paid"
   amountPaid?: number;     // with payment "paid", if different from the price
+  callConsent?: boolean;   // the customer agreed to a confirmation/reminder call
 }
 
 export type BookResult =
@@ -208,6 +210,7 @@ async function bookLocked(ws: Workspace, i: BookInput): Promise<BookResult> {
       base.start_at, base.end_at, base.mode, base.list_price, base.amount, base.pay_method, Date.now() + hold * 60_000
     ));
     if (!res) return SLOT_TAKEN(cal, free.start);
+    if (i.callConsent) await setBooking(res.lastId, { call_consent: 1 });
     try {
       const link = await createPaymentLink(ws, {
         amount, ref, expiresInMinutes: hold,
@@ -265,6 +268,8 @@ async function bookLocked(ws: Workspace, i: BookInput): Promise<BookResult> {
   const payNote = !amount ? "" : paidNow ? `${inr(amount)} paid${method === "upi" ? " by UPI" : " in person"}` : method === "venue" ? `${inr(amount)} to pay ${mode === "online" ? "later" : "at venue"}` : method === "upi" ? `${inr(amount)} UPI to confirm` : `${inr(amount)} paid`;
   await logActivity(ws.id, "booking", i.channel, `${b.customer_name} · ${serviceName} · ${cal.fmt(free.start)} · ${b.customer_phone}${payNote ? ` · ${payNote}` : ""} · ${ref}`);
   if (!i.byOwner) await notifyOwners(ws, `New booking ${ref}: ${b.customer_name}, ${serviceName}, ${cal.fmt(free.start)}${payNote ? `, ${payNote}` : ""}.`);
+  if (i.callConsent) await setBooking(b.id, { call_consent: 1 });
+  await bookingChanged(ws, b.id);
   if (pending) {
     return { ...out, status: "pending_manual", payUrl: payPageUrl(ws, ref), amount,
       message: `Booked, payment pending. Ask them to pay ${inr(amount)} by UPI here: ${payPageUrl(ws, ref)} and send the payment screenshot. The team confirms it. Ref ${ref}.` };
@@ -358,6 +363,7 @@ async function markPaidLocked(ws: Workspace, b: Booking, paymentId: string | nul
     const c = confirmation(ws, { ...ready, ...ev });
     await logActivity(ws.id, "booking", fresh.channel, `Paid ${inr(fresh.amount)} online (${via}) · ${fresh.customer_name} · ${fresh.service_name} · ${whenText(ws, fresh.start_at)} · ${fresh.ref}`);
     await notifyOwners(ws, `💰 ${inr(fresh.amount)} received · booking ${fresh.ref} confirmed: ${fresh.customer_name}, ${fresh.service_name}, ${whenText(ws, fresh.start_at)}.`);
+    await bookingChanged(ws, fresh.id);
     const msg = `✅ Payment of ${inr(fresh.amount)} received. ${c.message}`;
     await notifyCustomer(ws, fresh, msg);
     return { state: "confirmed", message: msg };
@@ -455,6 +461,7 @@ export async function cancelBooking(ws: Workspace, b: Booking, by: "customer" | 
   if (b.status === "held" && b.payment_link_id) await cancelPaymentLink(ws, b.payment_link_id);
   const refund = b.pay_status === "paid" && b.amount > 0;
   await setBooking(b.id, { status: "cancelled", hold_expires_at: null, pay_status: refund ? "refund_due" : b.pay_status, note: `${b.note}${b.note ? " · " : ""}Cancelled by ${by}${reason ? `: ${reason}` : ""}`.slice(0, 500) });
+  await bookingChanged(ws, b.id);
   await logActivity(ws.id, "cancel", b.channel, `${b.ref} · ${b.customer_name} · ${b.service_name} · ${whenText(ws, b.start_at)} (by ${by})${refund ? ` · refund ${inr(b.amount)} due` : ""}`);
   if (by === "customer") await notifyOwners(ws, `❌ ${b.customer_name} cancelled ${b.ref} (${b.service_name}, ${whenText(ws, b.start_at)}).${refund ? ` They paid ${inr(b.amount)} online: refund it from your Razorpay dashboard if your policy allows.` : ""}`);
   else await notifyCustomer(ws, b, `Your ${b.service_name} booking on ${whenText(ws, b.start_at)} (ref ${b.ref}) was cancelled by ${ws.business_name}.${reason ? ` Reason: ${reason}.` : ""}${refund ? " Your payment will be refunded." : ""} Reply here to book another time.`);
@@ -486,6 +493,7 @@ async function rescheduleLocked(ws: Workspace, b: Booking, newStart: string) {
     }
   }
   await logActivity(ws.id, "reschedule", b.channel, `Moved ${b.ref} to ${cal.fmt(f.start)} · ${b.customer_name}`);
+  await bookingChanged(ws, b.id);
   await notifyOwners(ws, `🔁 ${b.customer_name} moved ${b.ref} (${b.service_name}) to ${cal.fmt(f.start)}.`);
   return { ok: true, message: `Moved to ${cal.fmt(f.start)}. Ref ${b.ref}.${b.customer_email && canInvite(ws) ? " The calendar invite was updated." : ""}` };
 }
@@ -563,7 +571,7 @@ export async function notifyOwners(ws: Workspace, text: string) {
 }
 
 /** Keeps the assistant's memory in step with messages we sent outside a reply. */
-async function appendToChat(wsId: number, channel: string, ext: string, text: string) {
+export async function appendToChat(wsId: number, channel: string, ext: string, text: string) {
   const row = await db.get<{ history: string }>("SELECT history FROM conversations WHERE workspace_id=? AND channel=? AND external_id=?", wsId, channel, ext);
   if (!row) return;
   const h = JSON.parse(row.history);

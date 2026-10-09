@@ -11,6 +11,14 @@ import {
 import { book, Booking, forwardText, forwardUrl, cancelBooking, checkPayment, confirmManualPayment, getBooking, listBookings, listForOwner, notifyCustomer, notifyOwners, priceInfo, reschedule, tryWhatsApp, whenText } from "./bookings.js";
 import { attachOwnerProof, latestLoosePhoto, submitCustomerProof } from "./proofs.js";
 import { razorpayReady, upiReady } from "./payments.js";
+import { voiceSettings } from "./voice/agent.js";
+
+/** The calling agent is connected and will make confirmation or reminder calls. */
+function callsOn(ws: Workspace) {
+  if (!ws.voice_provider) return false;
+  const v = voiceSettings(ws);
+  return v.enabled && (v.confirm || v.remind !== "off");
+}
 
 export type Channel = "whatsapp" | "widget" | "test";
 
@@ -57,6 +65,7 @@ function customerTools(ws: Workspace, channel: Channel, services: Service[]): To
           ...(anyBoth ? { mode: { type: "string", enum: ["online", "offline"], description: "For services offered both ways: online session or in person" } } : {}),
           ...(anyPaid ? { payment: { type: "string", enum: ["online", "venue"], description: "Paid services only: pay online now, or pay at the venue/offline" } } : {}),
           ...(needsPhone ? { customer_phone: str("Phone number with country code") } : {}),
+          ...(callsOn(ws) ? { ok_to_call: { type: "boolean", description: "true only if the customer said yes to a quick confirmation/reminder phone call" } } : {}),
         },
         ["start", "service", "customer_name", ...(needsPhone ? ["customer_phone"] : [])]
       ),
@@ -138,7 +147,8 @@ Rules:
 - For a service offered both ways, ask: online or in person?
 - For paid services, call get_price and offer exactly the how_to_pay options it returns (one line, e.g. "₹500 at the clinic, or ₹450 if you pay online now (10% off)"). Never offer online payment unless it's listed there. For online sessions say "pay later", never "at the venue".
 - Before booking have: service, date, time, name${channel === "whatsapp" ? "" : ", phone"}${canInvite(ws) ? ", and ask once for email for the calendar invite (they can skip)" : ""}. Then get a clear yes.
-- After booking, always confirm it: the ref, service, day and time, in one or two lines. In person: add the address and map link only if they're in the facts above (if there's no address, don't mention it). Online: include the meeting link. Never use talk_to_human just because some detail is missing.
+${callsOn(ws) ? `- Before booking, ask once in the same message: "Is it okay if we call you to confirm and remind you?" Pass ok_to_call true only if they say yes; no answer or no means false.
+` : ""}- After booking, always confirm it: the ref, service, day and time, in one or two lines. In person: add the address and map link only if they're in the facts above (if there's no address, don't mention it). Online: include the meeting link. Never use talk_to_human just because some detail is missing.
 - If the result status is awaiting_payment (payment link): share the link, say the slot is held for about 20 minutes and it confirms automatically once paid.
 - If the result status is pending_manual (UPI): the slot is already booked; share the UPI link and ask them to send the payment screenshot; the team confirms it. Don't mention any hold or time limit.
 - When they say they paid, call check_payment and say exactly what it returns.${channel === "whatsapp" && upiReady(ws) ? `
@@ -181,6 +191,7 @@ async function runCustomerTool(ws: Workspace, channel: Channel, owner: string, p
       return book(ws, {
         start: input.start, serviceName: input.service, customerName: String(input.customer_name || "").trim() || "Customer",
         phone, email: input.customer_email, mode: input.mode, payment: input.payment, channel, owner, phoneVerified: channel === "whatsapp",
+        callConsent: callsOn(ws) && input.ok_to_call === true,
       });
     }
     case "check_payment":

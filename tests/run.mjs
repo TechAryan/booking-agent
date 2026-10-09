@@ -15,6 +15,8 @@ const env = {
   WA_BASE_META: "http://localhost:4100/wa/meta", WA_BASE_D360: "http://localhost:4100/wa/d360", WA_BASE_TWILIO: "http://localhost:4100/wa/twilio",
   WA_BASE_TWILIO_MSG: "http://localhost:4100/wa/twilio", WA_BASE_GUPSHUP: "http://localhost:4100/wa/gupshup", WA_BASE_GALLABOX: "http://localhost:4100/wa/gallabox",
   WA_BASE_EXOTEL: "http://localhost:4100/wa/exotel", ALLOW_PRIVATE_FETCH: "1", PAYMENT_SWEEP_MS: "1500", TEST_CHAT_LIMIT: "2000", SITE_REPUBLISH_MS: "300", AI_TEST_LIMIT: "100",
+  VOICE_BASE_BOLNA: "http://localhost:4100/voice/bolna", VOICE_BASE_RETELL: "http://localhost:4100/voice/retell", VOICE_BASE_ELEVENLABS: "http://localhost:4100/voice/elevenlabs",
+  VOICE_BASE_SARVAM: "http://localhost:4100/voice/sarvam", VOICE_TEST_HOURS: "0-24", VOICE_CONFIRM_DELAY_MS: "300", VOICE_RETRY_MS: "600",
 };
 // Unit checks first (inbox, jobs, transactions, double-booking guard), on their own database.
 {
@@ -46,7 +48,7 @@ for (let i = 0; i < 40; i++) {
   await new Promise((r) => setTimeout(r, 500));
 }
 // TEST_UI=1 runs the browser test (tests/ui.mjs) instead of the API test.
-const files = process.env.TEST_UI ? ["tests/ui.mjs"] : ["tests/e2e.mjs", "tests/e2e-v7.mjs", "tests/e2e-ai.mjs", "tests/e2e-site.mjs", ...(process.env.TEST_DB === "turso" ? ["tests/edge.ts"] : []), "tests/e2e-wa.mjs", ...(process.env.TEST_DB === "turso" ? ["tests/edge-wa.ts"] : [])];
+const files = process.env.ONLY ? process.env.ONLY.split(",") : process.env.TEST_UI ? ["tests/ui.mjs"] : ["tests/e2e.mjs", "tests/e2e-v7.mjs", "tests/e2e-ai.mjs", "tests/e2e-site.mjs", ...(process.env.TEST_DB === "turso" ? ["tests/edge.ts"] : []), "tests/e2e-wa.mjs", ...(process.env.TEST_DB === "turso" ? ["tests/edge-wa.ts"] : []), "tests/e2e-voice.mjs", ...(process.env.TEST_DB === "turso" ? ["tests/edge-voice.ts"] : [])];
 let failed = 0;
 for (const f of files) {
   const args = f.endsWith(".ts") ? ["node_modules/tsx/dist/cli.mjs", "--disable-warning=ExperimentalWarning", f] : [f];

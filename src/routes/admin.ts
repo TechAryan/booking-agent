@@ -179,14 +179,14 @@ adminRoutes.get("/admin", async (req, res) => {
 
 interface FormValues {
   name: string; email: string; phone: string; role: "user" | "admin"; status: "active" | "inactive"; validUntil: string | null;
-  permWidget: boolean; permWhatsapp: boolean; notes: string; paymentStatus: "paid" | "pending" | "trial";
+  permWidget: boolean; permWhatsapp: boolean; permCalling: boolean; notes: string; paymentStatus: "paid" | "pending" | "trial";
   sharedKey: string; newKeyName: string; newKeyModel: string;
 }
 
 function valuesOf(u: User, sharedKeyId: number | null): FormValues {
   return {
     name: u.name, email: u.email, phone: u.phone || "", role: u.role, status: u.status, validUntil: u.valid_until,
-    permWidget: !!u.perm_widget, permWhatsapp: !!u.perm_whatsapp, notes: u.notes, paymentStatus: u.payment_status || "pending",
+    permWidget: !!u.perm_widget, permWhatsapp: !!u.perm_whatsapp, permCalling: !!u.perm_calling, notes: u.notes, paymentStatus: u.payment_status || "pending",
     sharedKey: sharedKeyId ? String(sharedKeyId) : "", newKeyName: "", newKeyModel: env.defaultModel,
   };
 }
@@ -238,6 +238,7 @@ async function userForm(req: Request, v: FormValues | null, id?: number) {
       <div class="checks">
         <label><input type="checkbox" name="perm_widget" value="1" ${!v || v.permWidget ? "checked" : ""}> Website chat widget</label>
         <label><input type="checkbox" name="perm_whatsapp" value="1" ${!v || v.permWhatsapp ? "checked" : ""}> WhatsApp</label>
+        <label><input type="checkbox" name="perm_calling" value="1" ${!v || v.permCalling ? "checked" : ""}> Calling agent</label>
       </div>
       <label>Internal notes <span class="hint">plan, deal, anything useful. Only admins see this</span></label>
       <textarea name="notes" placeholder="e.g. ₹999/month plan, referred by…">${v?.notes ?? ""}</textarea>
@@ -280,6 +281,7 @@ function readForm(req: Request): FormValues {
     validUntil: validUntil && /^\d{4}-\d{2}-\d{2}$/.test(validUntil) ? validUntil : null,
     permWidget: b.perm_widget === "1",
     permWhatsapp: b.perm_whatsapp === "1",
+    permCalling: b.perm_calling === "1",
     notes: (b.notes || "").slice(0, 2000),
     paymentStatus: ps === "paid" || ps === "trial" ? ps : "pending",
     sharedKey: b.shared_key === "new" || /^\d+$/.test(b.shared_key || "") ? b.shared_key! : "",
@@ -502,8 +504,8 @@ adminRoutes.post("/admin/users/:id", async (req, res) => {
     return fail(e.message);
   }
   await db.run(
-    `UPDATE users SET name=?, email=?, phone=?, role=?, status=?, valid_until=?, perm_widget=?, perm_whatsapp=?, notes=?, payment_status=? WHERE id=?`,
-    f.name, f.email, f.phone, f.role, f.status, f.validUntil, f.permWidget ? 1 : 0, f.permWhatsapp ? 1 : 0, f.notes,
+    `UPDATE users SET name=?, email=?, phone=?, role=?, status=?, valid_until=?, perm_widget=?, perm_whatsapp=?, perm_calling=?, notes=?, payment_status=? WHERE id=?`,
+    f.name, f.email, f.phone, f.role, f.status, f.validUntil, f.permWidget ? 1 : 0, f.permWhatsapp ? 1 : 0, f.permCalling ? 1 : 0, f.notes,
     f.role === "admin" ? u.payment_status : f.paymentStatus, u.id
   );
   const ws = await getWorkspaceForUser(u.id);

@@ -24,6 +24,7 @@ export function stepNav(req: Request, active: string, w?: Workspace) {
     ...(u.perm_widget ? [{ key: "widget", label: "Widget", ic: "widget", done: !!w?.widget_enabled, optional: true }] : []),
     { key: "website", label: "Website", ic: "globe", done: !!w?.site_live, optional: true },
     ...(u.perm_whatsapp ? [{ key: "whatsapp", label: "WhatsApp", ic: "whatsapp", done: !!w?.whatsapp_enabled, optional: true }] : []),
+    ...(u.perm_calling ? [{ key: "calling", label: "Calling", ic: "send", done: !!w?.voice_provider, optional: true }] : []),
   ];
   const i = Math.max(0, steps.findIndex((s) => s.key === active));
   const cur = steps[i]!;
